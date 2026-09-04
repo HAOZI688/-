@@ -43,10 +43,12 @@ export async function startProductionAction(planId: string) {
 
 /* ===== Gate 2：内容审核（writeback 产出的 in_review 资产） ===== */
 
-/** 通过：版本化存档后放行（规格 §26） */
+/** 通过：版本化存档后放行（规格 §26）；V4 按有无人工编辑版本区分 直接通过/修改后通过 */
 export async function approveAssetAction(assetId: string) {
   const asset = await contentRepository.getAssetById(assetId);
   if (!asset) throw new Error("内容资产不存在");
+  const versions = await contentRepository.listVersions(assetId);
+  const humanEdited = versions.some((v) => v.createdBy === "user");
   await contentRepository.createVersion(assetId, asset.version, asset.content ?? "", "人工审核通过");
   const updated = await contentRepository.updateAsset(assetId, { status: "ready", version: asset.version + 1 });
   await auditRepository.log({
@@ -55,9 +57,12 @@ export async function approveAssetAction(assetId: string) {
     entityId: assetId,
     before: { status: asset.status, version: asset.version },
     after: { status: "ready", version: updated.version },
-    notes: "Human Gate 内容审核通过",
+    notes: humanEdited ? "Human Gate 内容审核通过（修改后）" : "Human Gate 内容审核通过（直接）",
     actor: "user",
   });
+  // V4：内容验收统计（有编辑版本 → approved_after_edit，否则 approved_directly）
+  const { acceptanceStatsService } = await import("@/lib/services/acceptance-stats");
+  await acceptanceStatsService.record(asset, humanEdited ? { approvedAfterEdit: 1 } : { approvedDirectly: 1 });
   revalidatePath("/review");
   revalidatePath("/content/" + asset.topicId);
 }
@@ -76,6 +81,9 @@ export async function revisionAssetAction(assetId: string) {
     notes: "人工打回修改",
     actor: "user",
   });
+  // V4：内容验收统计（rejected + revision_count）
+  const { acceptanceStatsService } = await import("@/lib/services/acceptance-stats");
+  await acceptanceStatsService.record(asset, { rejected: 1, revisionCount: 1 });
   revalidatePath("/review");
   revalidatePath("/content/" + asset.topicId);
 }

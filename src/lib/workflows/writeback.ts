@@ -166,6 +166,11 @@ export async function writeBackRunOutputs(
     });
     result.contentAssets += 1;
   }
+  // V4：内容验收统计——记录 AI 生成资产数（approved/rejected 由审核动作记录）
+  if (result.contentAssets > 0) {
+    const { acceptanceStatsService } = await import("@/lib/services/acceptance-stats");
+    await acceptanceStatsService.recordGenerated(runMeta.workflowType, result.contentAssets);
+  }
 
   await auditRepository.log({
     action: "content_update",

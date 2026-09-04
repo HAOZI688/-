@@ -34,6 +34,7 @@ export const contentAssets = pgTable(
     content: text("content"),
     contentRole: contentRole("content_role"),
     cta: text("cta"),
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("workflow"),
     status: assetStatus("status").notNull().default("draft"),
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -82,6 +83,9 @@ export const brandAssets = pgTable("brand_assets", {
   version: integer("version").notNull().default(1),
   usageNotes: text("usage_notes"),
   active: boolean("active").notNull().default(true),
+  /** V4：锁定（品牌资产被引用/审核通过后禁止 AI 自动替换） */
+  locked: boolean("locked").notNull().default(false),
+  dataSource: varchar("data_source", { length: 30 }).notNull().default("manual"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

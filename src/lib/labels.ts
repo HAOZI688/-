@@ -54,6 +54,7 @@ export const RUN_STATUS_LABELS: Record<string, string> = {
   completed: "已完成",
   failed: "失败",
   needs_review: "待人工复核",
+  insufficient_data: "数据不足",
 };
 
 export const RUN_STATUS_TONES: Record<string, BadgeVariant> = {
@@ -62,6 +63,7 @@ export const RUN_STATUS_TONES: Record<string, BadgeVariant> = {
   completed: "green",
   failed: "red",
   needs_review: "orange",
+  insufficient_data: "orange",
 };
 
 export const VERIFICATION_LABELS: Record<string, string> = {

@@ -2,7 +2,7 @@
 
 import { getRunTasks, getRunsByTopic } from "@/lib/repo";
 import { revalidatePath } from "next/cache";
-import { startWorkflowRun, type WorkflowType } from "@/lib/workflows/engine";
+import { startWorkflowRun, retryWorkflowRun, type WorkflowType } from "@/lib/workflows/engine";
 
 export async function getRunTasksAction(runId: string) {
   return getRunTasks(runId);
@@ -25,4 +25,13 @@ export async function triggerWorkflowAction(input: { workflowType: WorkflowType;
   revalidatePath("/workflows/runs");
   revalidatePath("/workflows");
   return run.id;
+}
+
+/** V4：失败/需人工介入的 run 幂等重试（复用原 run，不重复创建 writeback 产物） */
+export async function retryWorkflowRunAction(runId: string) {
+  const run = await retryWorkflowRun(runId);
+  revalidatePath("/production");
+  revalidatePath("/workflows/runs");
+  revalidatePath("/dashboard");
+  return { ok: Boolean(run), runId };
 }

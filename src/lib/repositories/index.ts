@@ -18,3 +18,4 @@ export * from "./orchestrator";
 export * from "./trend";
 export * from "./attribution";
 export * from "./notification";
+export * from "./publish-package";

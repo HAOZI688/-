@@ -7,6 +7,7 @@ import { trendScoringService } from "@/lib/services/trend-scoring";
 import { attributionService } from "@/lib/services/attribution";
 import { accountGrowthBaselineService } from "@/lib/services/account-growth-baseline";
 import { connectorSyncService } from "@/lib/services/connector-sync";
+import { readCsvFile } from "@/lib/connectors/csv";
 import { notificationService } from "@/lib/services/notification";
 import { topicPerformanceV2Service } from "@/lib/services/topic-performance-v2";
 import {
@@ -140,30 +141,24 @@ export async function editPlanItemFormAction(itemId: string, formData: FormData)
 
 /* ===== Production（/production） ===== */
 
-/** 重试失败的 run：以相同参数重新启动 */
+/** 重试失败的 run：V4 幂等重试——复用原 run（同 run_id/batchId，不重复创建 writeback 产物） */
 export async function retryRunAction(runId: string) {
   const run = await workflowRepository.getRun(runId);
   if (!run) throw new Error("Run 不存在");
-  const { startWorkflowRun } = await import("@/lib/workflows/engine");
-  const newRun = await startWorkflowRun({
-    workflowType: run.workflowType,
-    topicId: run.topicId ?? undefined,
-    batchId: run.batchId ?? undefined,
-    sourcePacketId: run.sourcePacketId ?? undefined,
-    inputPayload: (run.inputPayload ?? {}) as Record<string, unknown>,
-  });
-  // 关联的计划项指到新 run（DAG 推进基于 runId）
+  const { retryWorkflowRun } = await import("@/lib/workflows/engine");
+  await retryWorkflowRun(runId);
+  // 关联的计划项保持原绑定（runId 不变），仅确保状态回 running
   const items = await orchestratorRepository.getItemsByRunId(runId);
   for (const it of items) {
-    await orchestratorRepository.updatePlanItem(it.id, { status: "running", runId: newRun.id });
+    await orchestratorRepository.updatePlanItem(it.id, { status: "running", runId });
   }
   await auditRepository.log({
     action: "system",
     entityType: "workflow_runs",
-    entityId: newRun.id,
-    before: { retryOf: runId },
-    after: { status: "queued" },
-    notes: `用户重试 run ${runId.slice(0, 8)} → ${newRun.id.slice(0, 8)}`,
+    entityId: runId,
+    before: { status: run.status, retryCount: run.retryCount },
+    after: { status: "running", retryCount: run.retryCount + 1 },
+    notes: `用户幂等重试 run ${runId.slice(0, 8)}（第 ${run.retryCount + 1} 次）`,
     actor: "user",
   });
   revalidatePath("/production");
@@ -315,25 +310,34 @@ export async function sweepNotificationsAction() {
 
 /* ===== Connector File Import（/connectors/xiaodouya） ===== */
 
-/** 账号 CSV 导入（幂等 upsert + 快照 + 失败通知） */
+/** 账号 CSV 导入（幂等 upsert + 快照 + 失败通知；V4：编码检测 + 重复文件检测 + 历史导入） */
 export async function importAccountsCsvAction(formData: FormData) {
   const file = formData.get("file");
   if (!(file instanceof File)) return { ok: false as const, error: "未选择文件" };
-  const csvText = await file.text();
-  const result = await connectorSyncService.importAccountsCsv(csvText, file.name);
+  const { text, encoding, hash } = await readCsvFile(file);
+  const historicalImport = formData.get("historicalImport") === "on";
+  const result = await connectorSyncService.importAccountsCsv(text, file.name, { historicalImport, fileHash: hash, encoding });
   revalidatePath("/connectors/xiaodouya");
   revalidatePath("/analytics/attribution");
   return { ok: true as const, result };
 }
 
-/** 作品 CSV 导入（复用 V1 全流程 + 幂等 + 未匹配通知） */
+/** 作品 CSV 导入（复用 V1 全流程 + 幂等 + 未匹配通知；V4：编码检测 + 重复文件检测 + 历史导入） */
 export async function importPostsCsvAction(formData: FormData) {
   const file = formData.get("file");
   if (!(file instanceof File)) return { ok: false as const, error: "未选择文件" };
-  const csvText = await file.text();
-  const result = await connectorSyncService.importPostsCsv(csvText, file.name);
+  const { text, encoding, hash } = await readCsvFile(file);
+  const historicalImport = formData.get("historicalImport") === "on";
+  const result = await connectorSyncService.importPostsCsv(text, file.name, { historicalImport, fileHash: hash, encoding });
   revalidatePath("/connectors/xiaodouya");
   revalidatePath("/connectors/xiaodouya/mappings");
+  return { ok: true as const, result };
+}
+
+/** V4：失败行重试（Retry Failed Rows）——按批次重跑失败行 */
+export async function retryFailedRowsAction(batchId: string) {
+  const result = await connectorSyncService.retryFailedRows(batchId);
+  revalidatePath("/connectors/xiaodouya");
   return { ok: true as const, result };
 }
 
@@ -344,11 +348,12 @@ export async function saveMappingTemplateAction(input: { dataType: "account" | "
   return { ok: true as const, templateId: template.id };
 }
 
-/** 手动匹配外部作品 ↔ Publication（Error Recovery） */
+/** 手动匹配外部作品 ↔ Publication（Error Recovery；V4 记录 manual_confirmed_by / match_method） */
 export async function manualMatchPostAction(postId: string, publicationId: string) {
   const post = await connectorRepository.getExternalPost(postId);
   if (!post) throw new Error("外部作品不存在");
-  await connectorRepository.updateExternalPostMatch(postId, { publicationId, matchStatus: "confirmed", matchConfidence: "manual" });
+  await connectorRepository.updateExternalPostMatch(postId, { publicationId, matchStatus: "confirmed", matchConfidence: "high" });
+  await connectorRepository.setExternalPostMatchMeta(postId, { matchMethod: "manual", matchedAt: new Date(), manualConfirmedBy: "user" });
   await auditRepository.log({
     action: "external_post_match",
     entityType: "external_posts",

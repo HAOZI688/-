@@ -68,6 +68,8 @@ export default async function WeeklyPlanPage() {
 
   return (
     <div className="space-y-4 p-4">
+      {/* V4 冷启动保护（规格 §25）：数据不足时明确提示推荐依据 */}
+      <ColdStartBanner />
       {/* 头部 + 计划级动作 */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
@@ -299,6 +301,27 @@ function MiniStat({ label, value }: { label: string; value: number }) {
     <div className="rounded-lg border border-zinc-100 bg-white px-3 py-2">
       <div className="text-[10px] text-zinc-400">{label}</div>
       <div className="tabular text-lg font-semibold text-zinc-800">{value}</div>
+    </div>
+  );
+}
+
+/** V4 冷启动保护：数据置信度不足时提示推荐依据（规格 §25） */
+async function ColdStartBanner() {
+  const { computeDataConfidence } = await import("@/lib/services/data-confidence");
+  const confidence = await computeDataConfidence();
+  if (confidence.level === "medium" || confidence.level === "high") {
+    return (
+      <div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-700">
+        ✓ {confidence.message}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+      ⚠️ {confidence.message}
+      <span className="ml-2 text-[10px] text-amber-600">
+        （真实快照 {confidence.realPostSnapshots} · 表现记录 {confidence.realTopicPerformances} · 发布 {confidence.realPublications}）
+      </span>
     </div>
   );
 }

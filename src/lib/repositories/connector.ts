@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { db } from "@/lib/db";
 import {
   connectorAccounts,
@@ -154,6 +154,16 @@ export const connectorRepository = {
     return rows[0] ?? null;
   },
 
+  /** V4：匹配元数据留痕（match_method / matched_at / manual_confirmed_by） */
+  async setExternalPostMatchMeta(postId: string, meta: { matchMethod?: string; matchedAt?: Date; manualConfirmedBy?: string }) {
+    const rows = await db
+      .update(externalPosts)
+      .set({ ...meta, updatedAt: new Date() })
+      .where(eq(externalPosts.id, postId))
+      .returning();
+    return rows[0] ?? null;
+  },
+
   /* ===== Import Batches（规格 §38） ===== */
   async createImportBatch(input: typeof dataImportBatches.$inferInsert) {
     const rows = await db.insert(dataImportBatches).values(input).returning();
@@ -167,6 +177,22 @@ export const connectorRepository = {
 
   async listImportBatches(limit = 50) {
     return db.select().from(dataImportBatches).orderBy(desc(dataImportBatches.createdAt)).limit(limit);
+  },
+
+  async getImportBatch(id: string) {
+    const rows = await db.select().from(dataImportBatches).where(eq(dataImportBatches.id, id)).limit(1);
+    return rows[0] ?? null;
+  },
+
+  /** 重复文件检测：同 hash + 同数据类型且已完成/部分成功的批次即视为已导入 */
+  async findDuplicateBatch(fileHash: string, dataType: string) {
+    const rows = await db
+      .select()
+      .from(dataImportBatches)
+      .where(and(eq(dataImportBatches.fileHash, fileHash), eq(dataImportBatches.dataType, dataType), inArray(dataImportBatches.status, ["completed", "partial"])))
+      .orderBy(desc(dataImportBatches.createdAt))
+      .limit(1);
+    return rows[0] ?? null;
   },
 
   /* ===== Sync Jobs（规格 §42） ===== */

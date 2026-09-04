@@ -59,6 +59,7 @@ export const postMetricSnapshots = pgTable(
     completionRate: numeric("completion_rate"),
     fiveSecondRetention: numeric("five_second_retention"),
     profileVisits: integer("profile_visits").notNull().default(0),
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
     rawMetrics: jsonb("raw_metrics").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -89,6 +90,7 @@ export const accountMetricSnapshots = pgTable(
     impressions: integer("impressions").notNull().default(0),
     views: integer("views").notNull().default(0),
     engagements: integer("engagements").notNull().default(0),
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
     rawMetrics: jsonb("raw_metrics").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -115,6 +117,7 @@ export const topicPerformances = pgTable(
     conversionScore: numeric("conversion_score"),
     performanceScore: numeric("performance_score"),
     recommendation: varchar("recommendation", { length: 60 }),
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
     metrics: jsonb("metrics").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

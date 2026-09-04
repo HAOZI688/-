@@ -1,13 +1,21 @@
 import { connectorRepository, metricsRepository, publicationRepository, socialAccountRepository, auditRepository } from "@/lib/repositories";
-import { metricNormalizationService, STANDARD_METRICS } from "@/lib/services";
-import { parseCsv } from "./csv";
+import { metricNormalizationService } from "@/lib/services";
+import { parseCsv, parseNumber, parseDate, type CsvRow } from "./csv";
 
 /**
  * 小豆芽数据集成（规格 §34-§43）。
  *
  * V1 实现 File Import 模式：CSV 上传 → 检测 → 映射 → 匹配 → 快照。
  * V1 不假设公开 API 存在；API Mode 是预留 connectorType=future_api，只替换实现。
+ *
+ * V4 生产化（规格 §15-§19 / §21）：
+ * - 重复文件检测：同 fileHash + 同 dataType 已完成批次 → 跳过（不静默重复）
+ * - 行级错误：失败行结构化落库（rowIndex/row/error），支撑 Retry Failed Rows / Export Failed Rows
+ * - 历史导入模式：historicalImport=1，无 Publication 对应不算失败（允许后绑）
+ * - 匹配优先级链：external_post_id → external_url → platform+account+published_at → title_similarity → manual
+ * - 匹配留痕：match_method / match_confidence / matched_at / manual_confirmed_by
  */
+
 export interface XiaodouyaImportResult {
   batchId: string;
   connectorId: string;
@@ -18,7 +26,18 @@ export interface XiaodouyaImportResult {
   externalPostsUpdated: number;
   matchedPublications: number;
   snapshotsCreated: number;
+  /** 重复文件跳过（未新建批次，返回已有批次 ID） */
+  duplicate?: boolean;
   errors: string[];
+}
+
+export interface XiaodouyaImportOptions {
+  /** 历史导入：无 Publication 对应不算失败，标记 historical_import=1 */
+  historicalImport?: boolean;
+  /** 文件内容 SHA-256（重复检测） */
+  fileHash?: string;
+  /** 检测到的编码（utf8/gbk），留痕用 */
+  encoding?: "utf8" | "gbk";
 }
 
 /** 作品级 CSV 期望的最小字段（小豆芽导出常见列名） */
@@ -44,14 +63,33 @@ export const xiaodouyaConnector = {
   /**
    * 小豆芽作品 CSV 导入全流程：
    * 1. 解析 CSV → 检测必需字段
-   * 2. upsert external_posts（Post ID / URL 幂等）
-   * 3. 与 publications 匹配（Post ID → URL → 平台+账号+时间+标题相似度，规格 §37）
-   * 4. 生成 T+1 post_metric_snapshots
-   * 5. 留痕 data_import_batches + audit
+   * 2. 重复文件检测（同 fileHash 已完成批次 → 跳过）
+   * 3. upsert external_posts（Post ID / URL 幂等）
+   * 4. 与 publications 匹配（优先级链，规格 §21）
+   * 5. 生成 T+1 post_metric_snapshots
+   * 6. 留痕 data_import_batches + audit（失败行结构化落库）
    */
-  async importPostsCsv(csvText: string, fileName: string): Promise<XiaodouyaImportResult> {
+  async importPostsCsv(csvText: string, fileName: string, opts: XiaodouyaImportOptions = {}): Promise<XiaodouyaImportResult> {
     const connector = await this.ensureConnector();
     const { headers, rows } = parseCsv(csvText);
+    const historical = opts.historicalImport ?? false;
+
+    // 重复文件检测：同 hash 已完成/部分成功批次 → 直接跳过
+    if (opts.fileHash) {
+      const dup = await connectorRepository.findDuplicateBatch(opts.fileHash, "posts");
+      if (dup) {
+        await auditRepository.log({
+          action: "data_import",
+          entityType: "data_import_batches",
+          entityId: dup.id,
+          actor: "user",
+          before: null,
+          after: { fileName, duplicate: true, originalBatch: dup.id },
+          notes: `重复文件跳过（已有批次 ${dup.id.slice(0, 8)}）`,
+        });
+        return { batchId: dup.id, connectorId: connector.id, totalRows: rows.length, successRows: 0, failedRows: 0, externalPostsCreated: 0, externalPostsUpdated: 0, matchedPublications: 0, snapshotsCreated: 0, duplicate: true, errors: [] };
+      }
+    }
 
     const errors: string[] = [];
     if (!headers.length) errors.push("CSV 为空或无表头");
@@ -81,6 +119,10 @@ export const xiaodouyaConnector = {
       connectorId: connector.id,
       fileName,
       fileType: "csv",
+      dataType: "posts",
+      fileHash: opts.fileHash ?? null,
+      fileHeaders: headers as never,
+      historicalImport: historical ? 1 : 0,
       status: errors.length ? "failed" : "importing",
       totalRows: String(rows.length),
     });
@@ -93,46 +135,48 @@ export const xiaodouyaConnector = {
     // 账号映射：小豆芽 CSV 内账号名 → social_accounts
     const accounts = await socialAccountRepository.list();
     const accountByName = new Map(accounts.map((a) => [a.accountName, a]));
-    const platformDefault = platformCol ? String(rows[0]?.[platformCol] ?? "").toLowerCase() : "";
+    const platformDefault = platformCol ? String(rows[0]?.data[platformCol] ?? "").toLowerCase() : "";
 
     let success = 0;
     let created = 0;
     let updated = 0;
     let matched = 0;
     let snapshots = 0;
-    const rowErrors: string[] = [];
+    const failedRowData: { rowIndex: number; row: Record<string, string>; error: string }[] = [];
 
-    for (const row of rows) {
+    for (const { data: row, rowIndex } of rows) {
       try {
         const postId = postIdCol ? row[postIdCol] : "";
         if (!postId) {
-          rowErrors.push(`行缺少作品ID: ${JSON.stringify(row).slice(0, 80)}`);
+          failedRowData.push({ rowIndex, row, error: `行缺少作品ID: ${JSON.stringify(row).slice(0, 80)}` });
           continue;
         }
         const title = titleCol ? row[titleCol] : "";
-        const publishedAt = timeCol && row[timeCol] ? new Date(row[timeCol]) : null;
+        const publishedAt = timeCol ? parseDate(row[timeCol]) : null;
         const externalUrl = urlCol ? row[urlCol] : undefined;
         const accountName = accountCol ? row[accountCol] : "";
         const account = accountName ? accountByName.get(accountName) : undefined;
         const platform = (account?.platform ?? (platformDefault || "other")) as never;
 
-        // 作品 upsert（Post ID / URL 幂等）
+        // 作品 upsert（Post ID / URL 幂等；历史导入标记 historical_import + data_source）
         const { post, created: isNew } = await connectorRepository.upsertExternalPost({
           connectorId: connector.id,
           externalPostId: postId,
           title: title || null,
-          publishedAt: publishedAt && !isNaN(publishedAt.getTime()) ? publishedAt : null,
+          publishedAt,
           externalUrl: externalUrl || null,
           platform: platform || "other",
           socialAccountId: account?.id ?? null,
           matchStatus: "unmatched",
-          rawData: { row },
+          historicalImport: historical ? 1 : undefined,
+          dataSource: historical ? "historical_import" : "xiaodouya_import",
+          rawData: { row, encoding: opts.encoding ?? null, fileName },
         });
         if (isNew) created++;
         else updated++;
 
-        // 与 publication 匹配（规格 §37）
-        const match = await this.matchPublication(post.id, externalUrl, platform, title, account?.id ?? null);
+        // 与 publication 匹配（优先级链：ID → URL → 平台+账号+时间 → 标题相似 → manual）
+        const match = await this.matchPublication(post.id, externalUrl, platform, title, account?.id ?? null, publishedAt);
         if (match) matched++;
 
         // 作品指标快照（T+1：导入时点的首张快照）
@@ -141,16 +185,17 @@ export const xiaodouyaConnector = {
 
         success++;
       } catch (e) {
-        rowErrors.push(`行处理失败: ${e instanceof Error ? e.message : String(e)}`);
+        failedRowData.push({ rowIndex, row, error: e instanceof Error ? e.message : String(e) });
       }
     }
 
-    const finalStatus = rowErrors.length ? (rowErrors.length > success ? "failed" : "partial") : "completed";
+    const finalStatus = failedRowData.length ? (failedRowData.length > success ? "failed" : "partial") : "completed";
     await connectorRepository.updateImportBatch(batch.id, {
       status: finalStatus,
       successRows: String(success),
-      failedRows: String(rowErrors.length),
-      errorLog: rowErrors.slice(0, 20).join("; "),
+      failedRows: String(failedRowData.length),
+      failedRowData: failedRowData as never,
+      errorLog: failedRowData.slice(0, 20).map((f) => `第${f.rowIndex}行: ${f.error}`).join("; "),
       completedAt: new Date(),
     });
     await connectorRepository.updateConnector(connector.id, { lastSyncAt: new Date() });
@@ -160,7 +205,7 @@ export const xiaodouyaConnector = {
       entityId: batch.id,
       actor: "user",
       before: null,
-      after: { fileName, total: rows.length, success, created, matched, snapshots },
+      after: { fileName, total: rows.length, success, created, matched, snapshots, historical },
       notes: `小豆芽 CSV 导入: ${fileName}`,
     });
 
@@ -169,87 +214,109 @@ export const xiaodouyaConnector = {
       connectorId: connector.id,
       totalRows: rows.length,
       successRows: success,
-      failedRows: rowErrors.length,
+      failedRows: failedRowData.length,
       externalPostsCreated: created,
       externalPostsUpdated: updated,
       matchedPublications: matched,
       snapshotsCreated: snapshots,
-      errors: rowErrors,
+      errors: failedRowData.map((f) => `第${f.rowIndex}行: ${f.error}`),
     };
   },
 
   /**
-   * 匹配规则（规格 §37）：Post ID → URL → 平台+账号+时间+标题相似度 → 人工。
-   * 返回匹配到的 publicationId 或 null。
+   * 匹配优先级链（规格 §21）：
+   * 1. external_post_id：已绑定 publicationId 且手动确认（外部作品 ID 直接命中）
+   * 2. external_url：publishedUrl 精确匹配
+   * 3. platform + account + published_at ±1 天
+   * 4. title_similarity：平台+账号+标题相似
+   * 5. manual：人工兜底（本函数不执行，返回 null 进入未匹配列表）
+   * 每次命中写入 match_method / match_confidence / matched_at。
    */
-  async matchPublication(postId: string, externalUrl: string | undefined, platform: string, title: string, socialAccountId: string | null) {
+  async matchPublication(postId: string, externalUrl: string | undefined, platform: string, title: string, socialAccountId: string | null, publishedAt: Date | null = null) {
     const post = await connectorRepository.getExternalPost(postId);
     if (!post) return null;
 
-    // 规则 1：已在数据库中手动确认过
-    if (post.matchStatus === "confirmed" && post.publicationId) return post.publicationId;
+    // 规则 1：已在数据库中确认过（external_post_id 绑定）
+    if (post.matchStatus === "confirmed" && post.publicationId) {
+      await this.confirmMatch(post.id, post.publicationId, "confirmed", "external_post_id", "外部作品 ID 已绑定");
+      return post.publicationId;
+    }
 
     // 规则 2：URL 精确匹配
     if (externalUrl) {
       const pubs = await publicationRepository.listAll();
       const byUrl = pubs.find((p) => p.publishedUrl && p.publishedUrl === externalUrl);
       if (byUrl) {
-        await this.confirmMatch(post.id, byUrl.id, "confirmed", "URL 精确匹配");
+        await this.confirmMatch(post.id, byUrl.id, "confirmed", "external_url", "URL 精确匹配");
         return byUrl.id;
       }
     }
 
-    // 规则 3：平台 + 账号 + 发布时间 ±1 天 + 标题包含
+    // 规则 3：平台 + 账号 + 发布时间 ±1 天
     const pubs = await publicationRepository.list();
-    const candidates = pubs.filter((p) => {
+    if (publishedAt) {
+      const timeCandidates = pubs.filter((p) => {
+        const samePlatform = !platform || platform === "other" || p.pub.platform === platform;
+        if (!samePlatform) return false;
+        if (socialAccountId && p.pub.socialAccountId && p.pub.socialAccountId !== socialAccountId) return false;
+        const pubDate = p.pub.publishedDate ?? (p.pub.scheduledDate ? new Date(p.pub.scheduledDate) : null);
+        if (!pubDate) return false;
+        const diffMs = Math.abs(pubDate.getTime() - publishedAt.getTime());
+        return diffMs <= 86400000; // ±1 天
+      });
+      if (timeCandidates.length === 1) {
+        await this.confirmMatch(post.id, timeCandidates[0].pub.id, "suggested", "platform_time", "平台+账号+发布时间 ±1 天匹配");
+        return timeCandidates[0].pub.id;
+      }
+    }
+
+    // 规则 4：平台 + 账号 + 标题相似（标题 >= 4 字才参与）
+    const titleCandidates = pubs.filter((p) => {
       const samePlatform = !platform || platform === "other" || p.pub.platform === platform;
       if (!samePlatform) return false;
       if (socialAccountId && p.pub.socialAccountId && p.pub.socialAccountId !== socialAccountId) return false;
       const pubTitle = p.topic?.title ?? "";
-      const titleOk = !title || !pubTitle || title.length < 4 || pubTitle.includes(title.slice(0, 4)) || title.includes(pubTitle.slice(0, 4));
-      return titleOk;
+      if (!title || !pubTitle || title.length < 4) return false;
+      return pubTitle.includes(title.slice(0, 4)) || title.includes(pubTitle.slice(0, 4));
     });
 
-    if (candidates.length === 1) {
-      await this.confirmMatch(post.id, candidates[0].pub.id, "suggested", "平台+账号+标题相似");
-      return candidates[0].pub.id;
+    if (titleCandidates.length === 1) {
+      await this.confirmMatch(post.id, titleCandidates[0].pub.id, "suggested", "title_similarity", "平台+账号+标题相似匹配");
+      return titleCandidates[0].pub.id;
     }
     return null;
   },
 
-  async confirmMatch(postId: string, publicationId: string, matchStatus: "confirmed" | "suggested", note: string) {
+  async confirmMatch(postId: string, publicationId: string, matchStatus: "confirmed" | "suggested", matchMethod: string, note: string) {
     await connectorRepository.updateExternalPostMatch(postId, {
       publicationId,
       matchStatus,
       matchConfidence: matchStatus === "confirmed" ? "high" : "medium",
     });
+    // V4：match_method / matched_at 留痕
+    await connectorRepository.setExternalPostMatchMeta(postId, { matchMethod, matchedAt: new Date() });
     await auditRepository.log({
       action: "external_post_match",
       entityType: "external_posts",
       entityId: postId,
-      actor: "user",
+      actor: "system",
       before: null,
-      after: { publicationId, matchStatus, note },
+      after: { publicationId, matchStatus, matchMethod, note },
       notes: note,
     });
   },
 
-  /** 创建作品指标快照（T+1 基线） */
+  /** 创建作品指标快照（T+1 基线；V4 用 parseNumber 支持 万/千分位） */
   async createPostSnapshot(postId: string, publicationId: string | null, row: Record<string, string>, viewsCol: string | null, likesCol: string | null, commentsCol: string | null, sharesCol: string | null, savesCol: string | null) {
-    const num = (v: string | undefined): number | undefined => {
-      if (v === undefined || v === "") return undefined;
-      const n = Number(String(v).replace(/[^\d.\-]/g, ""));
-      return Number.isNaN(n) ? undefined : Math.round(n);
-    };
     const snapshot = await metricsRepository.createPostSnapshot({
       externalPostId: postId,
       publicationId,
       capturedAt: new Date(),
-      views: num(viewsCol ? row[viewsCol] : undefined) ?? 0,
-      likes: num(likesCol ? row[likesCol] : undefined) ?? 0,
-      comments: num(commentsCol ? row[commentsCol] : undefined) ?? 0,
-      shares: num(sharesCol ? row[sharesCol] : undefined) ?? 0,
-      saves: num(savesCol ? row[savesCol] : undefined) ?? 0,
+      views: parseNumber(viewsCol ? row[viewsCol] : undefined) ?? 0,
+      likes: parseNumber(likesCol ? row[likesCol] : undefined) ?? 0,
+      comments: parseNumber(commentsCol ? row[commentsCol] : undefined) ?? 0,
+      shares: parseNumber(sharesCol ? row[sharesCol] : undefined) ?? 0,
+      saves: parseNumber(savesCol ? row[savesCol] : undefined) ?? 0,
       rawMetrics: { source: "xiaodouya_csv", row },
     });
     return snapshot;

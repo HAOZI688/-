@@ -9,6 +9,9 @@ import {
 } from "@/lib/repositories";
 import { topicPerformanceV2Service } from "@/lib/services/topic-performance-v2";
 import { notificationService } from "@/lib/services/notification";
+import { actionItemsService } from "@/lib/services/action-items";
+import { computeDataConfidence } from "@/lib/services/data-confidence";
+import { appMode, isLiveMode, DATA_SOURCE_LABELS } from "@/lib/services/live-mode";
 import { isAiConfigured } from "@/lib/ai/providers";
 import { Card, CardContent } from "@/components/ui/card";
 import { PriorityBadge } from "@/components/ui/badge";
@@ -33,6 +36,7 @@ import { isoWeekKey, previousCompleteWeek } from "@/lib/utils";
 import { format } from "date-fns";
 import { generatePlanAction } from "@/app/actions/planning";
 import { confirmPlanAction, startProductionAction } from "@/app/actions/review";
+import { dismissActionItemAction } from "@/app/actions/action-items";
 
 export const dynamic = "force-dynamic";
 
@@ -65,16 +69,20 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
 };
 
 /**
- * Dashboard（V3 Production Workbench）：
- * Current Cycle（本周周期状态）→ Weekly Action Center（动作按钮流）
+ * Dashboard（V4 Live Workbench）：
+ * 今天需要处理什么（Action Center，自动聚合 7 类来源）
+ * → Current Cycle（本周周期状态）→ Weekly Action Center（动作按钮流）
  * → Workflow Status（DAG 类型 × 状态统计）→ Priority Topic Queue（带 Reason）
  * → Review Queue / Publish Queue → Performance Feedback（上一自然周）。
  * 全部真实落库，不 mock；Topic 链接用业务 ID（/topics/{topicId}）。
+ * APP_MODE=live 时 Performance Feedback 排除 seed 数据（规格 §20）。
  */
 export default async function DashboardPage() {
   const week = previousCompleteWeek();
   const thisWeek = isoWeekKey(new Date());
-  const [stats, topics, plans, assets, pubs, runs, perfRows, unread] = await Promise.all([
+  // Action Center 同步（幂等 upsert + 自动 resolve），首屏「今天需要处理什么」
+  await actionItemsService.syncActionItems();
+  const [stats, topics, plans, assets, pubs, runs, perfRowsAll, unread, actions, confidence] = await Promise.all([
     getDashboardStats(),
     listTopics(),
     orchestratorRepository.listPlans(4),
@@ -83,7 +91,12 @@ export default async function DashboardPage() {
     workflowRepository.listRunsWithTopic(100),
     topicPerformanceV2Service.listAll(week.weekKey),
     notificationService.countUnread(),
+    actionItemsService.listOpen(12),
+    computeDataConfidence(),
   ]);
+  const live = isLiveMode();
+  // live 模式排除 seed 数据（规格 §20）
+  const perfRows = live ? perfRowsAll.filter((r) => r.dataSource !== "seed") : perfRowsAll;
   const aiReady = isAiConfigured();
 
   const lastWeekPlan = plans.find((p) => p.weekPrefix === week.weekKey) ?? null;
@@ -122,6 +135,56 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-4 p-4">
+      {/* ===== 今天需要处理什么（V4 Action Center 首屏） ===== */}
+      <Card className="border-orange-100 bg-orange-50/40">
+        <CardContent className="p-0">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-orange-100/60 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              今天需要处理什么
+              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-normal text-orange-700">{actions.length} 项待办</span>
+              <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-normal text-zinc-500">
+                {live ? "LIVE 模式（已排除演示数据）" : "开发模式（含演示数据）"}
+              </span>
+            </div>
+            <span className="text-[10px] text-zinc-400">来源：周计划 / 工作流 / 审核 / 发布 / 连接器 / 数据质量（完成动作后自动消除）</span>
+          </div>
+          {actions.length === 0 ? (
+            <p className="px-3 py-4 text-center text-xs text-zinc-400">今天没有待处理项 —— 系统状态干净。</p>
+          ) : (
+            <ul className="divide-y divide-orange-100/50">
+              {actions.map((a) => (
+                <li key={a.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <PriorityBadge priority={a.priority as never} />
+                    <div className="min-w-0">
+                      <Link href={a.targetUrl ?? "#"} className="block truncate text-xs font-medium hover:text-blue-600">
+                        {a.title}
+                      </Link>
+                      <div className="truncate text-[10px] text-zinc-400">{a.description}</div>
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Link href={a.targetUrl ?? "#"} className="text-[11px] text-blue-600 hover:underline">去处理 →</Link>
+                    <form action={dismissActionItemAction.bind(null, a.id)}>
+                      <button type="submit" className="text-[10px] text-zinc-400 hover:text-zinc-600">忽略</button>
+                    </form>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* ===== 冷启动保护（数据置信度，规格 §25） ===== */}
+      {(confidence.level === "insufficient" || confidence.level === "low") && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          ⚠️ {confidence.message}
+          <span className="ml-2 text-[10px] text-amber-600">
+            （真实快照 {confidence.realPostSnapshots} · 表现记录 {confidence.realTopicPerformances} · 发布 {confidence.realPublications}）
+          </span>
+        </div>
+      )}
       {/* ===== Current Cycle + Weekly Action Center ===== */}
       <Card className="border-blue-100 bg-blue-50/40">
         <CardContent className="space-y-3 p-4">

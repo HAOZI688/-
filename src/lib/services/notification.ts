@@ -30,13 +30,40 @@ export interface NotifyInput {
 }
 
 export const notificationService = {
-  /** 创建通知（同 type+entity+title 未读去重） */
+  /** 创建通知（同 type+entity+title 未读去重）；配置 FEISHU_WEBHOOK_URL 时同步出站（fire-and-forget） */
   async notify(input: NotifyInput) {
     try {
-      return await notificationRepository.createDeduped({ ...input, severity: input.severity ?? "info" });
+      const row = await notificationRepository.createDeduped({ ...input, severity: input.severity ?? "info" });
+      // V4：出站通知（可选，规格 §29）——失败不影响站内通知
+      void this.sendFeishuWebhook(input);
+      return row;
     } catch (e) {
       console.error("notify failed:", e instanceof Error ? e.message : e);
       return null;
+    }
+  },
+
+  /** V4：飞书自定义机器人 webhook（文本消息）。未配置或失败均静默跳过。 */
+  async sendFeishuWebhook(input: NotifyInput) {
+    const url = process.env.FEISHU_WEBHOOK_URL;
+    if (!url) return;
+    const severityEmoji = input.severity === "error" ? "🔴" : input.severity === "warning" ? "🟡" : input.severity === "success" ? "🟢" : "🔵";
+    const linkSuffix = input.link ? `\n→ ${input.link}` : "";
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          msg_type: "text",
+          content: { text: `${severityEmoji} [Content OS] ${input.title}${linkSuffix}\n${input.message ?? ""}`.slice(0, 900) },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+    } catch (e) {
+      console.error("feishu webhook failed:", e instanceof Error ? e.message : e);
     }
   },
 

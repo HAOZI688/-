@@ -153,6 +153,8 @@ export const brandAssetType = pgEnum("brand_asset_type", [
   "icon",
   "visual_reference",
   "cta_asset",
+  "cover",
+  "card",
 ]);
 
 /** 知识状态（需求七） */

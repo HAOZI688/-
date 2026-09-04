@@ -1,6 +1,6 @@
 import { connectorRepository, metricsRepository, socialAccountRepository } from "@/lib/repositories";
 import { xiaodouyaConnector } from "@/lib/connectors/xiaodouya";
-import { parseCsv } from "@/lib/connectors/csv";
+import { parseCsv, parseNumber } from "@/lib/connectors/csv";
 import { notificationService } from "@/lib/services/notification";
 import { auditRepository } from "@/lib/repositories";
 import { db } from "@/lib/db";
@@ -181,11 +181,31 @@ export const connectorSyncService = {
   /**
    * 账号 CSV 导入（幂等）：platform+account_name 唯一键 upsert social_accounts +
    * connector_accounts 映射；无 external_account_id 时标记 unmapped。
+   * V4：重复文件检测（fileHash）/ 行级错误结构化落库 / 历史导入标记。
    */
-  async importAccountsCsv(csvText: string, fileName: string) {
+  async importAccountsCsv(csvText: string, fileName: string, opts: { historicalImport?: boolean; fileHash?: string; encoding?: "utf8" | "gbk" } = {}) {
     const connector = await xiaodouyaConnector.ensureConnector();
     const { headers, rows } = parseCsv(csvText);
-    const batch = await connectorRepository.createImportBatch({ connectorId: connector.id, fileName, fileType: "csv", status: "importing", totalRows: String(rows.length) });
+    const historical = opts.historicalImport ?? false;
+
+    // 重复文件检测：同 hash 已完成/部分成功批次 → 跳过
+    if (opts.fileHash) {
+      const dup = await connectorRepository.findDuplicateBatch(opts.fileHash, "accounts");
+      if (dup) {
+        await auditRepository.log({
+          action: "data_import",
+          entityType: "data_import_batches",
+          entityId: dup.id,
+          actor: "user",
+          before: null,
+          after: { fileName, duplicate: true, originalBatch: dup.id },
+          notes: `重复账号文件跳过（已有批次 ${dup.id.slice(0, 8)}）`,
+        });
+        return { batchId: dup.id, totalRows: rows.length, created: 0, updated: 0, failed: 0, errors: [], duplicate: true };
+      }
+    }
+
+    const batch = await connectorRepository.createImportBatch({ connectorId: connector.id, fileName, fileType: "csv", dataType: "accounts", fileHash: opts.fileHash ?? null, fileHeaders: headers as never, historicalImport: historical ? 1 : 0, status: "importing", totalRows: String(rows.length) });
     const errors: string[] = [];
     if (!headers.length) errors.push("CSV 为空或无表头");
 
@@ -198,14 +218,14 @@ export const connectorSyncService = {
     let created = 0;
     let updated = 0;
     let failed = 0;
-    const rowErrors: string[] = [];
+    const failedRowData: { rowIndex: number; row: Record<string, string>; error: string }[] = [];
     const platformMap: Record<string, string> = { 抖音: "douyin", 微信: "wechat", 公众号: "wechat", 小红书: "xiaohongshu", 视频号: "wechat_video", 快手: "kuaishou", B站: "bilibili", 哔哩哔哩: "bilibili", 其他: "other" };
 
-    for (const row of rows) {
+    for (const { data: row, rowIndex } of rows) {
       try {
         const accountName = nameCol ? row[nameCol] : "";
         if (!accountName) {
-          rowErrors.push(`行缺少账号名称: ${JSON.stringify(row).slice(0, 60)}`);
+          failedRowData.push({ rowIndex, row, error: `行缺少账号名称: ${JSON.stringify(row).slice(0, 60)}` });
           failed++;
           continue;
         }
@@ -226,28 +246,28 @@ export const connectorSyncService = {
 
         // 账号指标快照（如果有粉丝数）
         if (followersCol && row[followersCol]) {
-          const num = Number(String(row[followersCol]).replace(/[^\d.\-]/g, ""));
-          if (!Number.isNaN(num)) {
+          const num = parseNumber(row[followersCol]);
+          if (num !== undefined) {
             const accRow = await db.select().from(socialAccounts).where(sqlNameMatch(accountName)).limit(1);
             if (accRow[0]) {
               await metricsRepository.createAccountSnapshot({
                 socialAccountId: accRow[0].id,
                 capturedAt: new Date(),
-                followers: Math.round(num),
+                followers: num,
                 newFollowers: 0,
-                rawMetrics: { source: "xiaodouya_csv_accounts", row },
+                rawMetrics: { source: "xiaodouya_csv_accounts", row, encoding: opts.encoding ?? null },
               });
             }
           }
         }
       } catch (e) {
-        rowErrors.push(`行处理失败: ${e instanceof Error ? e.message : String(e)}`);
+        failedRowData.push({ rowIndex, row, error: `行处理失败: ${e instanceof Error ? e.message : String(e)}` });
         failed++;
       }
     }
 
-    const finalStatus = rowErrors.length ? (rowErrors.length > rows.length / 2 ? "failed" : "partial") : "completed";
-    await connectorRepository.updateImportBatch(batch.id, { status: finalStatus, successRows: String(created + updated), failedRows: String(failed), errorLog: rowErrors.slice(0, 20).join("; "), completedAt: new Date() });
+    const finalStatus = failedRowData.length ? (failedRowData.length > rows.length / 2 ? "failed" : "partial") : "completed";
+    await connectorRepository.updateImportBatch(batch.id, { status: finalStatus, successRows: String(created + updated), failedRows: String(failed), failedRowData: failedRowData as never, errorLog: failedRowData.slice(0, 20).map((f) => `第${f.rowIndex}行: ${f.error}`).join("; "), completedAt: new Date() });
     await connectorRepository.updateConnector(connector.id, { lastSyncAt: new Date() });
     await auditRepository.log({
       action: "data_import",
@@ -258,23 +278,72 @@ export const connectorSyncService = {
       after: { fileName, total: rows.length, created, updated, failed },
       notes: `小豆芽账号 CSV 导入: ${fileName}`,
     });
-    if (rowErrors.length) {
+    if (failedRowData.length) {
       await notificationService.notify({
         type: "data_sync_failed",
-        title: `账号导入有 ${rowErrors.length} 行失败`,
-        message: rowErrors[0],
+        title: `账号导入有 ${failedRowData.length} 行失败`,
+        message: failedRowData[0].error,
         link: "/connectors/xiaodouya",
         entityType: "data_import_batches",
         entityId: batch.id,
         severity: "warning",
       });
     }
-    return { batchId: batch.id, totalRows: rows.length, created, updated, failed, errors: rowErrors };
+    return { batchId: batch.id, totalRows: rows.length, created, updated, failed, errors: failedRowData.map((f) => `第${f.rowIndex}行: ${f.error}`), duplicate: false };
   },
 
-  /** 作品 CSV 导入（复用 V1 全流程 + 幂等 + 未匹配通知） */
-  async importPostsCsv(csvText: string, fileName: string) {
-    const result = await xiaodouyaConnector.importPostsCsv(csvText, fileName);
+  /** V4：失败行重试（Retry Failed Rows）——按批次读回 failed_row_data 重新导入。
+   * 注意：不传 fileHash（避免命中原 partial 批次被重复检测跳过）。 */
+  async retryFailedRows(batchId: string) {
+    const batch = await connectorRepository.getImportBatch(batchId);
+    if (!batch) return { ok: false as const, message: "批次不存在" };
+    const failedRowData = (batch.failedRowData ?? []) as { rowIndex: number; row: Record<string, string>; error: string }[];
+    if (!failedRowData.length) return { ok: false as const, message: "该批次无失败行可重试" };
+
+    if (batch.dataType === "accounts") {
+      // 重建 CSV 文本（表头 + 失败行），复用账号导入流程
+      const headers = (batch.fileHeaders ?? []) as string[];
+      const text = [headers.join(","), ...failedRowData.map((f) => headers.map((h) => f.row[h] ?? "").join(","))].join("\n");
+      const result = await this.importAccountsCsv(text, batch.fileName, { historicalImport: batch.historicalImport === 1, encoding: "utf8" });
+      return { ok: true as const, result };
+    }
+    // posts
+    const headers = (batch.fileHeaders ?? []) as string[];
+    const text = [headers.join(","), ...failedRowData.map((f) => headers.map((h) => f.row[h] ?? "").join(","))].join("\n");
+    const result = await xiaodouyaConnector.importPostsCsv(text, batch.fileName, { historicalImport: batch.historicalImport === 1, encoding: "utf8" });
+    return { ok: true as const, result };
+  },
+
+  /** V4：失败行导出（Export Failed Rows）——返回 CSV 文本供下载 */
+  async exportFailedRows(batchId: string) {
+    const batch = await connectorRepository.getImportBatch(batchId);
+    if (!batch) return { ok: false as const, message: "批次不存在", csv: "" };
+    const failedRowData = (batch.failedRowData ?? []) as { rowIndex: number; row: Record<string, string>; error: string }[];
+    if (!failedRowData.length) return { ok: false as const, message: "该批次无失败行", csv: "" };
+    const headers = (batch.fileHeaders ?? []) as string[];
+    const esc = (v: string) => (v.includes(",") || v.includes('"') || v.includes("\n") ? `"${v.replace(/"/g, '""')}"` : v);
+    const lines = [
+      [...headers, "错误原因"].map(esc).join(","),
+      ...failedRowData.map((f) => [...headers.map((h) => f.row[h] ?? ""), f.error].map(esc).join(",")),
+    ];
+    return { ok: true as const, csv: lines.join("\n") };
+  },
+
+  /** 作品 CSV 导入（复用 V1 全流程 + 幂等 + 未匹配通知；V4 传递历史导入/重复检测选项） */
+  async importPostsCsv(csvText: string, fileName: string, opts: { historicalImport?: boolean; fileHash?: string; encoding?: "utf8" | "gbk" } = {}) {
+    const result = await xiaodouyaConnector.importPostsCsv(csvText, fileName, opts);
+    if (result.duplicate) {
+      await notificationService.notify({
+        type: "data_sync_failed",
+        title: "重复文件已跳过",
+        message: `文件 ${fileName} 已导入过（同内容检测命中），未重复创建数据。`,
+        link: "/connectors/xiaodouya",
+        entityType: "data_import_batches",
+        entityId: result.batchId,
+        severity: "info",
+      });
+      return result;
+    }
     if (result.failedRows > 0) {
       await notificationService.notify({
         type: "data_sync_failed",

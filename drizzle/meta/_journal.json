@@ -36,6 +36,27 @@
       "when": 1788496623588,
       "tag": "0004_v3_workbench",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788504868762,
+      "tag": "0005_tough_meteorite",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788505622933,
+      "tag": "0006_luxuriant_stranger",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1788507276481,
+      "tag": "0007_striped_sway",
+      "breakpoints": true
     }
   ]
 }

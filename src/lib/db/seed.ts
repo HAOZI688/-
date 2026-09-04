@@ -1050,6 +1050,19 @@ export async function seed() {
   await db.update(schema.topicPerformances)
     .set({ performanceScore: "7.8" }).where(eq(schema.topicPerformances.topicId, t6.id));
 
+  // V4：全部数据标记为 seed 来源（live mode 下从 Dashboard/Analytics/Weekly Planning 排除）
+  console.log("📦 标记 dataSource=seed…");
+  await db.execute(sql`
+    UPDATE external_posts SET data_source = 'seed';
+    UPDATE post_metric_snapshots SET data_source = 'seed';
+    UPDATE account_metric_snapshots SET data_source = 'seed';
+    UPDATE topic_performances SET data_source = 'seed';
+    UPDATE topic_performance_scores SET data_source = 'seed';
+    UPDATE content_assets SET data_source = 'seed';
+    UPDATE brand_assets SET data_source = 'seed';
+    UPDATE publications SET data_source = 'seed';
+  `);
+
   console.log("✅ Seed 完成（58 表全部覆盖，含 V3）");
 }
 

@@ -52,6 +52,10 @@ export const workflowRuns = pgTable(
     status: workflowRunStatus("status").notNull().default("queued"),
     startedAt: timestamp("started_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
+    /** V4：模型全部失败进入人工介入态（needs_manual） */
+    needsManual: boolean("needs_manual").notNull().default(false),
+    /** V4：重试次数（幂等 retry，不重复创建 writeback 产物） */
+    retryCount: integer("retry_count").notNull().default(0),
     output: jsonb("output").default({}),
     error: text("error"),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -79,6 +83,8 @@ export const workflowTasks = pgTable(
     taskKey: varchar("task_key", { length: 64 }).notNull(),
     label: varchar("label", { length: 120 }),
     status: workflowRunStatus("status").notNull().default("queued"),
+    /** V4：重试次数（task 级幂等重试） */
+    retryCount: integer("retry_count").notNull().default(0),
     input: jsonb("input").default({}),
     output: jsonb("output").default({}),
     error: text("error"),

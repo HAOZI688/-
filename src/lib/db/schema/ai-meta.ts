@@ -69,6 +69,13 @@ export const aiUsageLogs = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     workflowRunId: uuid("workflow_run_id").references(() => workflowRuns.id, { onDelete: "set null" }),
     modelId: uuid("model_id").references(() => aiModels.id, { onDelete: "set null" }),
+    /** V4：实际使用的 Provider/Model（主备切换后可复盘） */
+    provider: varchar("provider", { length: 100 }),
+    model: varchar("model", { length: 200 }),
+    /** V4：本次调用发生前的重试次数 */
+    retryCount: integer("retry_count").notNull().default(0),
+    /** V4：使用的 Prompt 版本 */
+    promptVersion: varchar("prompt_version", { length: 20 }),
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
     cost: numeric("cost"),

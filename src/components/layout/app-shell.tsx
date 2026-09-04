@@ -24,6 +24,7 @@ import {
   Radar,
   Factory,
   ClipboardList,
+  Package,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CommandMenu } from "@/components/ui/command-menu";
@@ -52,6 +53,8 @@ const NAV_GROUPS = [
       { href: "/content", label: "内容资产", icon: Sparkles },
       { href: "/knowledge", label: "常青知识库", icon: BookOpen },
       { href: "/github-weekly", label: "GitHub 周榜", icon: Github },
+      { href: "/publish-packages", label: "发布包", icon: Package },
+      { href: "/publish-packages/assets", label: "品牌资产", icon: Package },
     ],
   },
   {
@@ -74,7 +77,10 @@ const NAV_GROUPS = [
   },
   {
     label: "系统",
-    items: [{ href: "/settings", label: "设置", icon: Settings }],
+    items: [
+      { href: "/settings", label: "设置", icon: Settings },
+      { href: "/system/readiness", label: "生产就绪检查", icon: Factory },
+    ],
   },
 ];
 
@@ -132,6 +138,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             快速跳转
             <kbd className="ml-auto rounded border border-zinc-200 bg-white px-1 text-[9px]">⌘K</kbd>
           </button>
+          {/* V4：登出（登录后显示；未配置凭证时隐藏） */}
+          <form action="/api/auth/logout" method="post" className="mt-2">
+            <button
+              type="submit"
+              className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-zinc-400 hover:bg-zinc-50 hover:text-zinc-600"
+            >
+              退出登录
+            </button>
+          </form>
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">

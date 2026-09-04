@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { orchestratorRepository, workflowRepository } from "@/lib/repositories";
+import { aiCostService } from "@/lib/services/ai-cost";
+import { acceptanceStatsService } from "@/lib/services/acceptance-stats";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -24,9 +26,12 @@ const PLAN_STATUS_LABELS: Record<string, string> = {
  * Error Recovery：失败 run 可 Retry（相同参数重启），queued/running 可取消。
  */
 export default async function ProductionPage() {
-  const [runs, plans] = await Promise.all([
+  const [runs, plans, costRows, costTotal, acceptance] = await Promise.all([
     workflowRepository.listRunsWithTopic(200),
     orchestratorRepository.listPlans(6),
+    aiCostService.weeklyByWorkflow(),
+    aiCostService.weeklyTotal(),
+    acceptanceStatsService.weeklySummary(),
   ]);
   // 每个计划项数（weekly_plans 无 items 列，一次批量查询）
   const planItemCounts = new Map<string, number>();
@@ -66,7 +71,7 @@ export default async function ProductionPage() {
         <MiniStat label="排队中" value={totalByStatus.queued} className="text-zinc-800" />
         <MiniStat label="运行中" value={totalByStatus.running} className="text-blue-700" />
         <MiniStat label="已完成" value={totalByStatus.completed} className="text-emerald-700" />
-        <MiniStat label="失败" value={totalByStatus.failed} className="text-red-600" />
+        <MiniStat label="失败 / 需介入" value={totalByStatus.failed + runs.filter((r) => r.run.needsManual).length} className="text-red-600" />
       </div>
 
       {/* 按工作流类型的 DAG 状态 */}
@@ -175,16 +180,21 @@ export default async function ProductionPage() {
                     </TableCell>
                     <TableCell className="text-[11px] text-zinc-500">{run.batchId ?? "—"}</TableCell>
                     <TableCell>
-                      <StatusBadge label={RUN_STATUS_LABELS[run.status] ?? run.status} tone={RUN_STATUS_TONES[run.status] ?? "default"} />
+                      <div className="flex items-center gap-1.5">
+                        <StatusBadge label={RUN_STATUS_LABELS[run.status] ?? run.status} tone={RUN_STATUS_TONES[run.status] ?? "default"} />
+                        {run.needsManual && (
+                          <StatusBadge label="需人工介入" tone="red" />
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell className="text-[11px] text-zinc-500">{fmtDate(run.startedAt ?? run.createdAt)}</TableCell>
                     <TableCell className="max-w-52 truncate text-[11px] text-red-600" title={run.error ?? ""}>
-                      {run.status === "failed" ? (run.error ?? "失败").slice(0, 60) : "—"}
+                      {run.status === "failed" || run.needsManual ? (run.error ?? "失败").slice(0, 60) : "—"}
                     </TableCell>
                     <TableCell>
                       <div className="flex gap-1.5">
                         <Link href="/workflows/runs" className="text-[11px] text-blue-600 hover:underline">执行记录 →</Link>
-                        {run.status === "failed" && (
+                        {(run.status === "failed" || run.needsManual) && (
                           <form action={retryRunAction.bind(null, run.id)}>
                             <Button variant="outline" size="sm">重试</Button>
                           </form>
@@ -203,6 +213,87 @@ export default async function ProductionPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* V4：AI 成本 + 内容验收（规格 §38/§39） */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardContent className="p-0">
+            <div className="flex items-center justify-between border-b border-zinc-100 px-3 py-2">
+              <span className="text-xs font-semibold">本周 AI 成本（真实调用留痕）</span>
+              <span className="text-[11px] text-zinc-500">
+                总计 ${costTotal.costUsd.toFixed(4)} · {costTotal.calls} 次调用
+                {costTotal.avgCostPerPublished !== null && ` · 单篇已发布 $${costTotal.avgCostPerPublished.toFixed(4)}`}
+              </span>
+            </div>
+            {costRows.length === 0 ? (
+              <p className="p-6 text-center text-xs text-zinc-400">
+                本周暂无真实 AI 调用（未配置 API Key 时工作流为演示模式，不产生成本）。
+              </p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>工作流</TableHead>
+                    <TableHead className="text-right">调用</TableHead>
+                    <TableHead className="text-right">Tokens</TableHead>
+                    <TableHead className="text-right">成本</TableHead>
+                    <TableHead className="text-right">平均延迟</TableHead>
+                    <TableHead className="text-right">重试率</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {costRows.map((r) => (
+                    <TableRow key={r.workflowType}>
+                      <TableCell className="text-xs font-medium">{WORKFLOW_TYPE_LABELS[r.workflowType] ?? r.workflowType}</TableCell>
+                      <TableCell className="text-right tabular-nums">{r.calls}</TableCell>
+                      <TableCell className="text-right tabular-nums">{(r.inputTokens + r.outputTokens).toLocaleString()}</TableCell>
+                      <TableCell className="text-right tabular-nums text-blue-700">${r.costUsd.toFixed(4)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{(r.avgLatencyMs / 1000).toFixed(1)}s</TableCell>
+                      <TableCell className="text-right tabular-nums">{(r.retryRate * 100).toFixed(0)}%</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="p-0">
+            <div className="border-b border-zinc-100 px-3 py-2 text-xs font-semibold">本周内容验收（Acceptance Rate）</div>
+            {acceptance.length === 0 ? (
+              <p className="p-6 text-center text-xs text-zinc-400">本周暂无内容产出记录。</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>工作流</TableHead>
+                    <TableHead className="text-right">生成</TableHead>
+                    <TableHead className="text-right">直接通过</TableHead>
+                    <TableHead className="text-right">修改后通过</TableHead>
+                    <TableHead className="text-right">打回</TableHead>
+                    <TableHead className="text-right">通过率</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {acceptance.map((a) => (
+                    <TableRow key={a.workflowType}>
+                      <TableCell className="text-xs font-medium">{WORKFLOW_TYPE_LABELS[a.workflowType] ?? a.workflowType}</TableCell>
+                      <TableCell className="text-right tabular-nums">{a.generated}</TableCell>
+                      <TableCell className="text-right tabular-nums text-emerald-600">{a.approvedDirectly}</TableCell>
+                      <TableCell className="text-right tabular-nums text-blue-600">{a.approvedAfterEdit}</TableCell>
+                      <TableCell className="text-right tabular-nums text-red-500">{a.rejected}</TableCell>
+                      <TableCell className="text-right tabular-nums font-medium">
+                        {a.acceptanceRate === null ? "—" : `${a.acceptanceRate.toFixed(0)}%`}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

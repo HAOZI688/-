@@ -3,6 +3,12 @@
  * - 每个 workflowType 有固定任务链（与 ai-prompts/<type>/main.md 的步骤一一对应）
  * - 每个任务写入 workflow_tasks，全程持久化，失败可追溯
  * - 未配置 API Key 时走演示模式：任务依次标记 running→completed（不调模型），产出占位输出
+ *
+ * V4 生产化（规格 §9/§10/§12）：
+ * - chatResilient：超时/重试/Provider Fallback，usage 留痕（provider/model/retry/cost）
+ * - 全链失败 → run.status=failed + needsManual=true（人工介入，不是静默失败）
+ * - 质量 Gate：produce 输出走 runQualityGate，不通过 → status=needs_review
+ * - 幂等重试：retryWorkflowRun 复用原 run（batchId/模板不变），writeback 跳过已写回产物
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -10,9 +16,10 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowRuns, workflowTasks } from "@/lib/db/schema";
 import { AI_PROMPTS_DIR } from "@/lib/ai/prompt-registry";
-import { chat, isAiConfigured } from "@/lib/ai/providers";
+import { chatResilient, isAiConfigured, AiResilienceError } from "@/lib/ai/providers";
 import { workflowRepository, orchestratorRepository } from "@/lib/repositories";
 import { writeBackRunOutputs } from "@/lib/workflows/writeback";
+import { runQualityGate } from "@/lib/workflows/quality-gate";
 import type { WorkflowRun } from "@/lib/db/schema";
 
 export type WorkflowType = "orchestrator" | "ai_weekly" | "github_weekly" | "evergreen" | "wechat_deep_dive";
@@ -88,7 +95,40 @@ export async function startWorkflowRun(opts: RunWorkflowOptions): Promise<Workfl
   return run;
 }
 
-async function executeRun(runId: string, opts: RunWorkflowOptions) {
+/** V4：幂等重试——复用原 run（batchId/模板不变），重新执行任务链。
+ * 已成功写回产物的 run 重试时跳过 writeback，防止重复创建 Derived Topic / Content Asset。 */
+export async function retryWorkflowRun(runId: string): Promise<WorkflowRun | null> {
+  const run = await workflowRepository.getRun(runId);
+  if (!run) return null;
+  if (run.status === "running" || run.status === "queued") return run;
+  if (run.status === "completed" && !run.needsManual) return run;
+
+  const inputPayload = (run.inputPayload ?? {}) as Record<string, unknown>;
+  const runOutput = (run.output ?? {}) as { writebackDone?: boolean };
+  const alreadyWrittenBack = Boolean(runOutput.writebackDone);
+
+  await workflowRepository.updateRun(runId, {
+    status: "running",
+    needsManual: false,
+    retryCount: run.retryCount + 1,
+    error: null,
+    startedAt: new Date(),
+    completedAt: null,
+  });
+
+  void executeRun(runId, {
+    workflowType: run.workflowType,
+    templateId: run.templateId ?? undefined,
+    topicId: run.topicId ?? undefined,
+    batchId: run.batchId ?? undefined,
+    sourcePacketId: run.sourcePacketId ?? undefined,
+    inputPayload,
+    skipWriteback: alreadyWrittenBack,
+  });
+  return run;
+}
+
+async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteback?: boolean }) {
   const steps = WORKFLOW_STEPS[opts.workflowType];
   const demo = opts.forceDemo || !isAiConfigured();
 
@@ -106,6 +146,7 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
   try {
     const prompt = await loadPrompt(opts.workflowType);
     const results: Record<string, unknown> = {};
+    let quality: { pass: boolean; reasons: string[] } | null = null;
 
     for (const step of steps) {
       const [task] = await db
@@ -130,26 +171,43 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
             payload: opts.inputPayload ?? {},
           };
         } else {
-          const res = await chat(
+          const res = await chatResilient(
             [
               { role: "system", content: `你是内容运营平台的工作流执行器。请严格遵循以下工作流提示词执行步骤「${step.label}」，并输出 JSON。\n\n${prompt}` },
               { role: "user", content: `步骤：${step.key}\n输入：${JSON.stringify(opts.inputPayload ?? {})}` },
             ],
             { maxTokens: 4000 },
           );
-          output = { provider: res.provider, model: res.model, text: res.text.slice(0, 8000) };
-          // V2：AI 用量留痕（规格 §58）
-          if (res.usage) {
-            await workflowRepository.logAiUsage({
-              workflowRunId: runId,
-              inputTokens: res.usage.inputTokens,
-              outputTokens: res.usage.outputTokens,
-              latency: Date.now() - stepStart,
-            });
-          }
+          output = { provider: res.provider, model: res.model, providerStatus: res.providerStatus, retryCount: res.retryCount, text: res.text.slice(0, 8000) };
+          // V2/V4：AI 用量留痕（规格 §58，含 provider/model/retry/cost）
+          await workflowRepository.logAiUsage({
+            workflowRunId: runId,
+            provider: res.provider,
+            model: res.model,
+            retryCount: res.retryCount,
+            promptVersion: "main",
+            inputTokens: res.usage?.inputTokens ?? 0,
+            outputTokens: res.usage?.outputTokens ?? 0,
+            cost: String(res.costUsd),
+            latency: Date.now() - stepStart,
+          });
         }
         results[step.key] = output;
         await db.update(workflowTasks).set({ status: "completed", output, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
+
+        // V4：质量 Gate——内容生产步骤（produce/draft）检查产出
+        if (!demo && (step.key === "produce" || step.key === "draft")) {
+          quality = await runQualityGate({
+            workflowType: opts.workflowType,
+            text: output.text as string,
+            sourcePacketId: opts.sourcePacketId ?? null,
+            topicId: opts.topicId ?? null,
+          });
+          if (!quality.pass) {
+            results.quality = quality;
+            await db.update(workflowTasks).set({ output: { ...output, quality } }).where(eq(workflowTasks.id, task.id));
+          }
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         await db.update(workflowTasks).set({ status: "failed", error: msg, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
@@ -157,46 +215,51 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
       }
     }
 
+    // 质量 Gate 不通过 → needs_review（内容仍保留，人工审核决定去留）
+    const finalStatus = quality && !quality.pass ? "needs_review" : "completed";
     await db
       .update(workflowRuns)
-      .set({ status: "completed", output: { steps: results, demo }, completedAt: new Date() })
+      .set({ status: finalStatus, output: { steps: results, demo, writebackDone: true }, completedAt: new Date() })
       .where(eq(workflowRuns.id, runId));
 
     // V2：输出写回（Derived Topic / Content Asset）+ 依赖 DAG 推进
-    const completedRun = await workflowRepository.getRun(runId);
-    if (completedRun) {
-      const writeback = await writeBackRunOutputs(runId, {
-        workflowType: opts.workflowType,
-        topicId: completedRun.topicId,
-        demo: Boolean(completedRun.output && typeof completedRun.output === "object" && (completedRun.output as { demo?: boolean }).demo),
-      });
-      // V3：产出内容资产 → 通知进入审核队列（content_needs_review）
-      if (writeback.contentAssets > 0) {
-        const { notificationService } = await import("@/lib/services/notification");
-        await notificationService.notify({
-          type: "content_needs_review",
-          title: `${writeback.contentAssets} 条内容待审核`,
-          message: `${opts.workflowType} 工作流产出了新内容资产，进入 Review Workbench 审核。`,
-          link: "/review",
-          entityType: "workflow_runs",
-          entityId: runId,
-          severity: "info",
+    if (!opts.skipWriteback) {
+      const completedRun = await workflowRepository.getRun(runId);
+      if (completedRun) {
+        const writeback = await writeBackRunOutputs(runId, {
+          workflowType: opts.workflowType,
+          topicId: completedRun.topicId,
+          demo: Boolean(completedRun.output && typeof completedRun.output === "object" && (completedRun.output as { demo?: boolean }).demo),
         });
+        // V3：产出内容资产 → 通知进入审核队列（content_needs_review）
+        if (writeback.contentAssets > 0) {
+          const { notificationService } = await import("@/lib/services/notification");
+          await notificationService.notify({
+            type: "content_needs_review",
+            title: `${writeback.contentAssets} 条内容待审核`,
+            message: `${opts.workflowType} 工作流产出了新内容资产，进入 Review Workbench 审核。`,
+            link: "/review",
+            entityType: "workflow_runs",
+            entityId: runId,
+            severity: "info",
+          });
+        }
       }
-      await advanceDependenciesOf(runId);
     }
+    await advanceDependenciesOf(runId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    const needsManual = e instanceof AiResilienceError || /AI_PROVIDER_NOT_CONFIGURED|timeout|ETIMEDOUT|ECONNREFUSED/i.test(msg);
     await db
       .update(workflowRuns)
-      .set({ status: "failed", error: msg, completedAt: new Date() })
+      .set({ status: "failed", needsManual, error: msg.slice(0, 500), completedAt: new Date() })
       .where(eq(workflowRuns.id, runId));
-    // V3：失败通知（workflow_failed）+ 依赖 DAG 推进
+    // V3/V4：失败通知（workflow_failed，全模型失败标记需人工介入）+ 依赖 DAG 推进
     try {
       const { notificationService } = await import("@/lib/services/notification");
       await notificationService.notify({
         type: "workflow_failed",
-        title: `工作流运行失败（${opts.workflowType}）`,
+        title: needsManual ? `AI 调用失败，需要人工介入（${opts.workflowType}）` : `工作流运行失败（${opts.workflowType}）`,
         message: msg.slice(0, 200),
         link: "/production",
         entityType: "workflow_runs",

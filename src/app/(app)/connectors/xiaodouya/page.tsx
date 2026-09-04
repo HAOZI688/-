@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { connectorRepository, publicationRepository, socialAccountRepository } from "@/lib/repositories";
 import { connectorSyncService, getConnectorAdapter } from "@/lib/services/connector-sync";
-import { importAccountsCsvAction, importPostsCsvAction, manualMatchPostAction } from "@/app/actions/v3";
+import { importAccountsCsvAction, importPostsCsvAction, manualMatchPostAction, retryFailedRowsAction } from "@/app/actions/v3";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,14 @@ const MATCH_TONES: Record<string, "green" | "orange" | "default" | "red"> = {
   suggested: "orange",
   unmatched: "default",
   conflict: "red",
+};
+/** V4：匹配方式标签（external_post_id / external_url / platform_time / title_similarity / manual） */
+const METHOD_LABELS: Record<string, string> = {
+  external_post_id: "作品ID绑定",
+  external_url: "URL精确",
+  platform_time: "平台+时间",
+  title_similarity: "标题相似",
+  manual: "人工确认",
 };
 
 const FRESHNESS_LABELS: Record<string, string> = {
@@ -97,6 +105,14 @@ export default async function XiaodouyaPage() {
   async function submitPostsCsv(formData: FormData) {
     "use server";
     await importPostsCsvAction(formData);
+  }
+
+  /** form action 契约返回 void：包装 retryFailedRowsAction（失败行重试） */
+  async function handleRetryFailedRows(formData: FormData) {
+    "use server";
+    const batchId = String(formData.get("batchId") ?? "");
+    if (!batchId) return;
+    await retryFailedRowsAction(batchId);
   }
 
   return (
@@ -216,6 +232,10 @@ export default async function XiaodouyaPage() {
                 required
                 className="block w-full text-xs text-zinc-600 file:mr-3 file:rounded-md file:border-0 file:bg-blue-50 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-blue-700"
               />
+              <label className="flex items-center gap-1.5 text-[11px] text-zinc-500">
+                <input type="checkbox" name="historicalImport" className="accent-blue-600" />
+                历史导入（首次回流历史作品：无发布计划对应不算失败）
+              </label>
               <Button size="sm" type="submit">导入作品 CSV</Button>
             </form>
           </div>
@@ -332,6 +352,12 @@ export default async function XiaodouyaPage() {
                           {MATCH_LABELS[post.matchStatus] ?? post.matchStatus}
                           {post.matchConfidence ? ` · ${post.matchConfidence}` : ""}
                         </Badge>
+                        {post.matchMethod && (
+                          <span className="ml-1.5 text-[10px] text-zinc-400">{METHOD_LABELS[post.matchMethod] ?? post.matchMethod}</span>
+                        )}
+                        {post.historicalImport === 1 && (
+                          <span className="ml-1.5 text-[10px] text-amber-500">历史</span>
+                        )}
                       </TableCell>
                       <TableCell className="max-w-[160px] truncate">
                         {publication ? (
@@ -366,21 +392,41 @@ export default async function XiaodouyaPage() {
                       <TableHead className="text-right">成功</TableHead>
                       <TableHead className="text-right">失败</TableHead>
                       <TableHead>时间</TableHead>
+                      <TableHead>操作</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {batches.map((b) => (
-                      <TableRow key={b.id}>
-                        <TableCell className="max-w-[160px] truncate font-medium text-zinc-700">{b.fileName}</TableCell>
-                        <TableCell>
-                          <Badge variant={BATCH_TONES[b.status] ?? "default"}>{b.status}</Badge>
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">{b.totalRows ?? "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums text-emerald-600">{b.successRows ?? "—"}</TableCell>
-                        <TableCell className="text-right tabular-nums text-red-500">{b.failedRows ?? "—"}</TableCell>
-                        <TableCell className="tabular-nums text-zinc-500">{fmtDate(b.createdAt)}</TableCell>
-                      </TableRow>
-                    ))}
+                    {batches.map((b) => {
+                      const hasFailedRows = Array.isArray(b.failedRowData) && b.failedRowData.length > 0;
+                      return (
+                        <TableRow key={b.id}>
+                          <TableCell className="max-w-[160px] truncate font-medium text-zinc-700">{b.fileName}</TableCell>
+                          <TableCell>
+                            <Badge variant={BATCH_TONES[b.status] ?? "default"}>{b.status}</Badge>
+                            {b.historicalImport === 1 && (
+                              <span className="ml-1 text-[10px] text-amber-500">历史</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums">{b.totalRows ?? "—"}</TableCell>
+                          <TableCell className="text-right tabular-nums text-emerald-600">{b.successRows ?? "—"}</TableCell>
+                          <TableCell className="text-right tabular-nums text-red-500">{b.failedRows ?? "—"}</TableCell>
+                          <TableCell className="tabular-nums text-zinc-500">{fmtDate(b.createdAt)}</TableCell>
+                          <TableCell>
+                            {hasFailedRows && (
+                              <div className="flex items-center gap-1.5">
+                                <form action={handleRetryFailedRows}>
+                                  <input type="hidden" name="batchId" value={b.id} />
+                                  <Button size="sm" variant="outline" type="submit">重试失败行</Button>
+                                </form>
+                                <a href={`/api/connectors/export-failed-rows?batchId=${b.id}`} target="_blank" rel="noreferrer">
+                                  <Button size="sm" variant="ghost">导出失败行</Button>
+                                </a>
+                              </div>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               )}

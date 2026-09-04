@@ -93,6 +93,7 @@ export const topicPerformanceScores = pgTable(
     recommendation: varchar("recommendation", { length: 40 }),
     /** 如 HIGH_CONVERSION / RISING_TREND / HIGH_FOLLOWER_IMPACT / HIGH_TRAFFIC_LOW_CONVERSION / CONTENT_SATURATION / LOW_PERFORMANCE / KNOWLEDGE_GAP */
     reasonCodes: text("reason_codes").array().default([]),
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
     metrics: jsonb("metrics").default({}),
     configVersion: varchar("config_version", { length: 32 }).default("1.0"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

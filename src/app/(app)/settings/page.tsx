@@ -45,6 +45,40 @@ export default async function SettingsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* V4 数据导出（规格 §31）+ 调度器诚实状态 */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle>数据导出（CSV）</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            <div className="grid grid-cols-2 gap-2">
+              <a href="/api/export?type=topics" className="rounded-md border border-zinc-200 px-2 py-1.5 text-center hover:bg-zinc-50">Topics</a>
+              <a href="/api/export?type=publications" className="rounded-md border border-zinc-200 px-2 py-1.5 text-center hover:bg-zinc-50">Publications</a>
+              <a href="/api/export?type=topic_performance" className="rounded-md border border-zinc-200 px-2 py-1.5 text-center hover:bg-zinc-50">Topic Performance</a>
+              <a href="/api/export?type=social_metrics" className="rounded-md border border-zinc-200 px-2 py-1.5 text-center hover:bg-zinc-50">Social Metrics</a>
+            </div>
+            <p className="text-[10px] text-zinc-400">CSV（UTF-8 BOM，Excel 可直接打开）。配置登录凭证后由系统统一鉴权。</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle>调度器（诚实状态）</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-xs">
+            <div className="flex items-center justify-between">
+              <span className="text-zinc-500">调度端点</span>
+              <Badge variant="green">Ready（POST /api/cron/scheduler）</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-zinc-500">外部 Cron</span>
+              <Badge variant="outline">Not Configured（需自行配置 crontab）</Badge>
+            </div>
+            <p className="pt-1 text-[10px] leading-relaxed text-zinc-400">
+              系统不内置常驻调度进程。每周任务需外部触发（crontab 示例见 API 路由注释）：
+              <code className="ml-1 rounded bg-zinc-100 px-1">0 9 * * 1 curl -s -X POST http://localhost:3210/api/cron/scheduler</code>
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

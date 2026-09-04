@@ -1,6 +1,6 @@
 # Implementation Progress（实施进度）
 
-> **状态**：V1 核心闭环已实现（tag v1.0.0，43 表冻结）；V2 自动运行能力已实现（47 表，P0 全部完成）；**V3 Production Workbench 已交付（58 表，QA 全绿）**。
+> **状态**：V1 核心闭环已实现（tag v1.0.0，43 表冻结）；V2 自动运行能力已实现（47 表，P0 全部完成）；V3 Production Workbench 已交付（58 表，QA 全绿）；**V4 Production Readiness 已交付（61 表，E2E 26/26，Final Status: PRODUCTION READY EXCEPT REAL-DATA ACCEPTANCE，见 docs/23）**。
 > 覆盖：模块清单 / 目录结构 / 迁移状态 / 页面清单 / AI 工作流 / 数据集成 / 已知问题 / 未完成项 / 下一阶段建议。
 
 ---
@@ -43,7 +43,7 @@ drizzle/0000_*_*.sql + 0001 + 0002 + 0003 + 0004_v3_workbench.sql   # 已应用�
 
 | 项 | 状态 |
 |---|---|
-| 迁移文件 | 0000（全量）+ 0001（增量 25 表 + 枚举调整）✅ 已应用 |
+| 迁移文件 | 0000（全量）+ 0001（增量 25 表 + 枚举调整）+ 0005/0006/0007（V4：publish_packages/action_items/data_source/match 列/file_hash/failed_row_data/auth 枚举）✅ 全部应用，61 张表 |
 | Seed | `pnpm db:seed`：8 Topics / 10 血缘 / 6 来源项 / 8 仓库快照 / 5+5 runs / 6 assets / 4 publications / 6+6 快照 / 3 leads / 16+ audit 等全表覆盖 |
 | 数据库 | docker postgres（content-os），43 表实测见 `docs/15` |
 
@@ -148,6 +148,27 @@ drizzle/0000_*_*.sql + 0001 + 0002 + 0003 + 0004_v3_workbench.sql   # 已应用�
 
 **交付期修复的真实缺陷**：`/trend-radar/{非UUID}` 曾 500（PG 22P02）→ getTrend 先正则判定 UUID；子查询走 trend.id；列表/搜索 href 改 trend_key。修复后 200/200/404 三态验证 + E2E 重跑 12/12。
 
+## 6.6 V4 Production Readiness（2026-09-04 交付）
+
+详细实现地图见 docs/22，QA 证据见 docs/23。
+
+| 能力 | 状态 |
+|---|---|
+| 发布包（GitHub 周榜包：总榜+5项目文案+提纲+标题+标签+图片顺序+Snapshot 绑定；QA 三项门禁；视觉挂载；状态机） | ✅（E2E 5-9 PASS） |
+| 品牌资产中心（上传/预览/启用停用/锁定/引用；正式 Logo 禁 AI 替换） | ✅（E2E 8 PASS） |
+| CSV 导入生产化（UTF-8/GB18030 编码检测、行级错误留痕、失败行重试/导出、历史导入模式、SHA-256 重复检测、万/亿/Excel 序列号解析、五级匹配链 external_post_id→URL→平台+时间→标题→人工） | ✅（脚本级 + E2E 10 PASS；真实文件 BLOCKED_BY_REAL_DATA） |
+| AI Provider Resilience（90s 超时/指数退避×2/Provider Fallback/成本估算留痕；全链失败 needs_manual） | ✅（代码路径验证；真实 Key BLOCKED_BY_REAL_DATA） |
+| 工作流质量 Gate（空文/短文/无标题/CTA 数量/来源引用/违禁词/冒充已发布 → needs_review） | ✅（7 项脚本验证） |
+| 幂等重试（复用原 run，writeback 防重复）+ 内容验收统计（直接通过/修改后通过/打回/通过率/平均修订）+ AI 成本展示 | ✅ |
+| Live Operation Mode（APP_MODE=live 排除 seed；数据来源标记 8 表；冷启动 data_confidence 四档 + 提示文案；归因 insufficient_data） | ✅ |
+| Action Center（7 来源统一待办 + 自动 resolve + dismiss；Dashboard「今天需要处理什么」首屏） | ✅（E2E 1 PASS，同步幂等验证） |
+| 最小登录认证（AUTH_PASSWORD_HASH/HMAC 会话/Proxy 路由保护/登出） | ✅（核心逻辑验证；E2E 14 PASS 开发模式提示） |
+| /system/readiness（Critical/Required/Optional 三级，Critical FAIL → NOT READY） | ✅（E2E 12 PASS） |
+| Scheduler 诚实状态（Endpoint Ready / External Cron Not Configured；CRON_SECRET 保护）+ 飞书出站通知（可选） | ✅ |
+| 备份恢复（scripts/backup-db.sh + restore-db.sh 验证库模式；实测 backup 40K → restore 61 表行数一致） | ✅ PASS |
+| 数据导出（/api/export：topics/publications/topic_performance/social_metrics CSV） | ✅（E2E 13 PASS） |
+| 文档（20 备份/21 非开发运营指南/22 实现说明/23 QA 交付报告） | ✅ |
+
 ## 7. 已知问题（与基线偏差）
 
 | # | 问题 | 影响 | 处理 |
@@ -157,6 +178,7 @@ drizzle/0000_*_*.sql + 0001 + 0002 + 0003 + 0004_v3_workbench.sql   # 已应用�
 | 3 | topic_score integer 丢小数 | 精度 | V2 numeric 迁移（docs/15） |
 | 4 | 小豆芽 CSV 依赖人工导出 | 操作成本 | V2 API Mode |
 | 5 | xlsx 依赖被安全分类器阻断 | 已绕行 | 自研 CSV 解析器（覆盖需求） |
+| 6 | 真实小豆芽文件 / LLM Key 未在本轮环境提供 | 验收 1/2 无法闭环 | 标记 BLOCKED_BY_REAL_DATA（docs/23 §9 给出 30 分钟补全跑法），未伪造 PASS |
 
 ## 8. 未完成项（V1 收尾 / V2）
 
@@ -168,7 +190,12 @@ drizzle/0000_*_*.sql + 0001 + 0002 + 0003 + 0004_v3_workbench.sql   # 已应用�
 - [x] 小豆芽 Connector Production Mode（File Import 一等能力 + 未匹配手动匹配 + 映射模板）✅（V3）
 - [x] Notification Center（9 类型）✅（V3）
 - [x] Topic Performance V2 + Weekly Planning V2（adjustment 明细）✅（V3）
-- [ ] 认证接入（users.role 启用）→ 用户明确暂不做认证/RBAC
+- [x] 生产化认证（单用户密码登录 + 路由保护 + readiness 检查）✅（V4；复杂 RBAC 仍按规格不做）
+- [x] 备份/恢复 + 数据导出 + 系统就绪检查 ✅（V4）
+- [ ] 真实小豆芽 CSV 回流验收 → 等真实导出文件（链路已就绪，docs/23 §9）
+- [ ] 四个 Workflow 真实 LLM 调用验收 → 等 API Key 配置（韧性层已就绪）
+- [ ] 发布平台 OpenAPI 接入 → 当前人工发布回填链接
+- [ ] 小豆芽 API Mode → 需官方 API Contract 确认后接入（Adapter 契约已预留，未配置不伪造 endpoint）
 - [ ] 发布平台 OpenAPI 接入 → 当前人工发布回填链接
 - [ ] 小豆芽 API Mode → 需官方 API Contract 确认后接入（V3 已预留 Adapter 契约，未配置不伪造 endpoint）
 

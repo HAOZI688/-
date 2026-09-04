@@ -12,8 +12,8 @@ export async function importXiaodouyaCsv(formData: FormData) {
   if (!(file instanceof File)) {
     return { ok: false as const, error: "未选择文件" };
   }
-  const csvText = await readCsvFile(file);
-  const result = await xiaodouyaConnector.importPostsCsv(csvText, file.name);
+  const { text, encoding, hash } = await readCsvFile(file);
+  const result = await xiaodouyaConnector.importPostsCsv(text, file.name, { encoding, fileHash: hash });
   revalidatePath("/connectors/xiaodouya");
   revalidatePath("/data-import");
   return { ok: true as const, result };

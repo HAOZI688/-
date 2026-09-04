@@ -21,3 +21,4 @@ export * from "./orchestrator";
 export * from "./v3-trends";
 export * from "./v3-attribution";
 export * from "./v3-ops";
+export * from "./v4-production";

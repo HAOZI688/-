@@ -1,4 +1,4 @@
-import { index, jsonb, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 import { connectorStatus, connectorType, mappingStatus, matchStatus } from "./enums";
 import { socialAccounts } from "./social";
 import { publications } from "./publishing";
@@ -65,6 +65,15 @@ export const externalPosts = pgTable(
     externalUrl: text("external_url"),
     matchStatus: matchStatus("match_status").notNull().default("unmatched"),
     matchConfidence: varchar("match_confidence", { length: 10 }),
+    /** V4：匹配方式（external_post_id / external_url / platform_time / title_similarity / manual） */
+    matchMethod: varchar("match_method", { length: 30 }),
+    /** V4：自动匹配命中的 Publication（外键保留 publicationId 兼容 V1） */
+    matchedAt: timestamp("matched_at", { withTimezone: true }),
+    manualConfirmedBy: varchar("manual_confirmed_by", { length: 120 }),
+    /** V4：数据来源标记（seed/manual/xiaodouya_import/historical_import/…） */
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
+    /** V4：历史导入（首次导入历史作品时无 Publication 对应，标记后仍可后绑） */
+    historicalImport: integer("historical_import").notNull().default(0),
     rawData: jsonb("raw_data").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -90,6 +99,16 @@ export const dataImportBatches = pgTable("data_import_batches", {
   successRows: text("success_rows"),
   failedRows: text("failed_rows"),
   errorLog: text("error_log"),
+  /** V4：文件内容 SHA-256（重复文件检测，幂等） */
+  fileHash: varchar("file_hash", { length: 64 }),
+  /** V4：导入数据类型（posts / accounts / post_metrics / account_metrics），支撑失败行重试 */
+  dataType: varchar("data_type", { length: 30 }).notNull().default("posts"),
+  /** V4：原始表头（失败行重试 / 导出 CSV 时重建表头） */
+  fileHeaders: jsonb("file_headers").default([]),
+  /** V4：结构化失败行 [{rowIndex, row, error}]，支撑 Retry Failed Rows / Export Failed Rows */
+  failedRowData: jsonb("failed_row_data").default([]),
+  /** V4：历史导入模式（首次导入历史数据，无 Publication 不算失败） */
+  historicalImport: integer("historical_import").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

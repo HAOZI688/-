@@ -32,6 +32,9 @@ export const publications = pgTable(
     publishedDate: timestamp("published_date", { withTimezone: true }),
     publishedUrl: text("published_url"),
     status: publicationStatus("status").notNull().default("planned"),
+    /** V4：历史导入生成的占位 Publication（无真实发布动作） */
+    historicalImport: integer("historical_import").notNull().default(0),
+    dataSource: varchar("data_source", { length: 30 }).notNull().default("manual"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

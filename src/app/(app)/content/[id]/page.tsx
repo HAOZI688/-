@@ -2,6 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAssetById, getTopicById, getRunsByTopic, listAllAssets, listVersions } from "@/lib/repo";
 import { contentRepository } from "@/lib/repositories";
+import { saveAssetEditAction } from "@/app/actions/content";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -63,6 +64,19 @@ export default async function ContentDetailPage({ params }: { params: Promise<{ 
                   CTA：{asset.cta}
                 </div>
               )}
+              {/* V4：人工编辑（版本化存档；审核时计入「修改后通过」） */}
+              <details className="mt-3 rounded-md border border-zinc-200">
+                <summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-600">人工编辑（保存新版本）</summary>
+                <form action={saveAssetEditAction.bind(null, asset.id)} className="space-y-2 p-3">
+                  <textarea
+                    name="content"
+                    defaultValue={asset.content ?? ""}
+                    rows={12}
+                    className="w-full rounded-md border border-zinc-200 p-2 font-mono text-xs text-zinc-700 focus:border-blue-400 focus:outline-none"
+                  />
+                  <Button size="sm" type="submit">保存新版本（v{asset.version + 1}）</Button>
+                </form>
+              </details>
             </CardContent>
           </Card>
         </div>

@@ -93,6 +93,24 @@ export const attributionService = {
       // 3) 候选作品
       const candidates = await this.candidates(socialAccountId, periodStart, periodEnd);
 
+      // V4 冷启动保护（规格 §25）：数据不足 → insufficient_data（不是失败，也不产生误导性归因）
+      // 阈值可配置：ATTRIBUTION_MIN_SNAPSHOTS（默认 2）/ ATTRIBUTION_MIN_CANDIDATES（默认 1）
+      const minSnapshots = Number(process.env.ATTRIBUTION_MIN_SNAPSHOTS ?? 2);
+      const minCandidates = Number(process.env.ATTRIBUTION_MIN_CANDIDATES ?? 1);
+      const periodSnapshots = await this.periodSnapshotCount(socialAccountId, periodStart, periodEnd);
+      if (periodSnapshots < minSnapshots || candidates.length < minCandidates) {
+        await attributionRepository.updateRun(run.id, {
+          status: "insufficient_data",
+          completedAt: new Date(),
+          observedGrowth: observed,
+          expectedGrowth: expected,
+          incrementalGrowth: 0,
+          unattributed: 0,
+          error: `数据不足（冷启动保护）：周期内账号快照 ${periodSnapshots}/${minSnapshots}，候选作品 ${candidates.length}/${minCandidates}。补足真实数据后重跑。`,
+        });
+        return { runId: run.id, observed, expected, incremental: 0, unattributed: 0, candidates: candidates.length };
+      }
+
       // 4) 概率分配 + 证据
       const totalScore = candidates.reduce((a, c) => a + c.score, 0);
       const results: typeof attributionResults.$inferInsert[] = [];
@@ -153,6 +171,15 @@ export const attributionService = {
       await attributionRepository.updateRun(run.id, { status: "failed", error: msg, completedAt: new Date() });
       throw e;
     }
+  },
+
+  /** V4：周期内账号快照数（冷启动判断用） */
+  async periodSnapshotCount(socialAccountId: string, periodStart: Date, periodEnd: Date): Promise<number> {
+    const snaps = await db
+      .select({ id: accountMetricSnapshots.id })
+      .from(accountMetricSnapshots)
+      .where(and(eq(accountMetricSnapshots.socialAccountId, socialAccountId), gte(accountMetricSnapshots.capturedAt, periodStart), lte(accountMetricSnapshots.capturedAt, periodEnd)));
+    return snaps.length;
   },
 
   /** 观察增长：周期内账号快照 new_followers 合计（无则用 followers delta） */
