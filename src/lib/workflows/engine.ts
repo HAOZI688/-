@@ -1,0 +1,147 @@
+/**
+ * Workflow Engine：一次 run 的执行器。
+ * - 每个 workflowType 有固定任务链（与 ai-prompts/<type>/main.md 的步骤一一对应）
+ * - 每个任务写入 workflow_tasks，全程持久化，失败可追溯
+ * - 未配置 API Key 时走演示模式：任务依次标记 running→completed（不调模型），产出占位输出
+ */
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { eq } from "drizzle-orm";
+import { db } from "@/lib/db";
+import { workflowRuns, workflowTasks } from "@/lib/db/schema";
+import { AI_PROMPTS_DIR } from "@/lib/ai/prompt-registry";
+import { chat, isAiConfigured } from "@/lib/ai/providers";
+import type { WorkflowRun } from "@/lib/db/schema";
+
+export type WorkflowType = "orchestrator" | "ai_weekly" | "github_weekly" | "evergreen" | "wechat_deep_dive";
+
+/** 各工作流的任务链：key 与 prompt 文件中的步骤名一致 */
+export const WORKFLOW_STEPS: Record<WorkflowType, { key: string; label: string }[]> = {
+  orchestrator: [
+    { key: "dedupe", label: "查重" },
+    { key: "cluster", label: "聚类" },
+    { key: "route", label: "评分与路由" },
+  ],
+  ai_weekly: [
+    { key: "fetch", label: "抓取候选事件池" },
+    { key: "verify", label: "数字核验" },
+    { key: "score", label: "评分筛选" },
+    { key: "produce", label: "生成口播与提纲" },
+  ],
+  github_weekly: [
+    { key: "snapshot", label: "抓取快照" },
+    { key: "value_filter", label: "价值过滤" },
+    { key: "promote", label: "提升为 Topic" },
+  ],
+  evergreen: [
+    { key: "research", label: "概念拆解" },
+    { key: "produce", label: "内容生产" },
+    { key: "bank", label: "知识库沉淀" },
+  ],
+  wechat_deep_dive: [
+    { key: "define_role", label: "确定内容角色" },
+    { key: "outline", label: "12 段提纲" },
+    { key: "draft", label: "成稿" },
+  ],
+};
+
+async function loadPrompt(workflowType: string): Promise<string> {
+  const file = path.join(process.cwd(), AI_PROMPTS_DIR, workflowType, "main.md");
+  try {
+    return await readFile(file, "utf-8");
+  } catch {
+    return ""; // prompt 缺失不阻断流程（演示模式可用）
+  }
+}
+
+export interface RunWorkflowOptions {
+  workflowType: WorkflowType;
+  templateId?: string;
+  topicId?: string;
+  batchId?: string;
+  sourcePacketId?: string;
+  inputPayload?: Record<string, unknown>;
+  /** 演示模式强制开启：即使配了 key 也不调模型（用于 UI 演示） */
+  forceDemo?: boolean;
+}
+
+/** 创建并执行一次 workflow run（同步返回创建后的 run，执行在后台进行） */
+export async function startWorkflowRun(opts: RunWorkflowOptions): Promise<WorkflowRun> {
+  const [run] = await db
+    .insert(workflowRuns)
+    .values({
+      workflowType: opts.workflowType,
+      templateId: opts.templateId,
+      topicId: opts.topicId,
+      batchId: opts.batchId,
+      sourcePacketId: opts.sourcePacketId,
+      inputPayload: (opts.inputPayload ?? {}) as Record<string, never>,
+      status: "queued",
+      startedAt: new Date(),
+    })
+    .returning();
+
+  // 后台执行（不 await，前端立即返回）
+  void executeRun(run.id, opts);
+  return run;
+}
+
+async function executeRun(runId: string, opts: RunWorkflowOptions) {
+  const steps = WORKFLOW_STEPS[opts.workflowType];
+  const demo = opts.forceDemo || !isAiConfigured();
+
+  await db.update(workflowRuns).set({ status: "running", startedAt: new Date() }).where(eq(workflowRuns.id, runId));
+
+  try {
+    const prompt = await loadPrompt(opts.workflowType);
+    const results: Record<string, unknown> = {};
+
+    for (const step of steps) {
+      const [task] = await db
+        .insert(workflowTasks)
+        .values({
+          runId,
+          taskKey: step.key,
+          label: step.label,
+          status: "running",
+          input: { demo, promptChars: prompt.length },
+          startedAt: new Date(),
+        })
+        .returning();
+
+      try {
+        let output: Record<string, unknown>;
+        if (demo) {
+          output = {
+            demo: true,
+            note: `演示模式：${step.label}（未配置 API Key，跳过模型调用）`,
+            payload: opts.inputPayload ?? {},
+          };
+        } else {
+          const res = await chat([
+            { role: "system", content: `你是内容运营平台的工作流执行器。请严格遵循以下工作流提示词执行步骤「${step.label}」，并输出 JSON。\n\n${prompt}` },
+            { role: "user", content: `步骤：${step.key}\n输入：${JSON.stringify(opts.inputPayload ?? {})}` },
+          ]);
+          output = { provider: res.provider, model: res.model, text: res.text.slice(0, 8000) };
+        }
+        results[step.key] = output;
+        await db.update(workflowTasks).set({ status: "completed", output, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        await db.update(workflowTasks).set({ status: "failed", error: msg, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
+        throw e;
+      }
+    }
+
+    await db
+      .update(workflowRuns)
+      .set({ status: "completed", output: { steps: results, demo }, completedAt: new Date() })
+      .where(eq(workflowRuns.id, runId));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    await db
+      .update(workflowRuns)
+      .set({ status: "failed", error: msg, completedAt: new Date() })
+      .where(eq(workflowRuns.id, runId));
+  }
+}

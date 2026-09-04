@@ -1,0 +1,1 @@
+ALTER TABLE "topics" ALTER COLUMN "topic_score" SET DATA TYPE numeric(4, 1);

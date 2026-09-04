@@ -1,0 +1,133 @@
+import { and, asc, desc, eq } from "drizzle-orm";
+import { db } from "@/lib/db";
+import {
+  accountMetricSnapshots,
+  contentMetrics,
+  metricDefinitions,
+  metricMappings,
+  postMetricSnapshots,
+  topicPerformances,
+} from "@/lib/db/schema";
+import { topics } from "@/lib/db/schema";
+
+/**
+ * Metrics Repository（规格 §80）：指标定义/映射/快照/Topic Performance。
+ * T+1/T+3/T+7/T+30 快照分析基础（规格 §40）。
+ */
+export const metricsRepository = {
+  /* ===== 内容指标（旧 content_metrics 兼容） ===== */
+  async getMetricsByTopic(topicId: string) {
+    return db.select().from(contentMetrics).where(eq(contentMetrics.topicId, topicId)).orderBy(desc(contentMetrics.metricDate));
+  },
+
+  async listAllMetrics(limit = 200) {
+    return db
+      .select({ m: contentMetrics, topic: topics })
+      .from(contentMetrics)
+      .innerJoin(topics, eq(contentMetrics.topicId, topics.id))
+      .orderBy(desc(contentMetrics.metricDate))
+      .limit(limit);
+  },
+
+  async upsertContentMetrics(input: typeof contentMetrics.$inferInsert) {
+    const rows = await db.insert(contentMetrics).values(input).onConflictDoNothing().returning();
+    return rows[0] ?? null;
+  },
+
+  /* ===== Metric Definitions / Mappings（规格 §39） ===== */
+  async listMetricDefinitions() {
+    return db.select().from(metricDefinitions).orderBy(desc(metricDefinitions.createdAt));
+  },
+
+  async getMetricDefinition(key: string) {
+    const rows = await db.select().from(metricDefinitions).where(eq(metricDefinitions.key, key)).limit(1);
+    return rows[0] ?? null;
+  },
+
+  async ensureMetricDefinition(input: typeof metricDefinitions.$inferInsert) {
+    const existing = await this.getMetricDefinition(input.key);
+    if (existing) return existing;
+    const rows = await db.insert(metricDefinitions).values(input).returning();
+    return rows[0];
+  },
+
+  async listMappings(connectorId?: string) {
+    return connectorId
+      ? db.select().from(metricMappings).where(eq(metricMappings.connectorId, connectorId)).orderBy(desc(metricMappings.createdAt))
+      : db.select().from(metricMappings).orderBy(desc(metricMappings.createdAt));
+  },
+
+  async createMapping(input: typeof metricMappings.$inferInsert) {
+    const rows = await db.insert(metricMappings).values(input).returning();
+    return rows[0];
+  },
+
+  /* ===== Post Metric Snapshots（规格 §40，T+N 时间序列） ===== */
+  async createPostSnapshot(input: typeof postMetricSnapshots.$inferInsert) {
+    const rows = await db.insert(postMetricSnapshots).values(input).returning();
+    return rows[0];
+  },
+
+  async createPostSnapshots(inputs: typeof postMetricSnapshots.$inferInsert[]) {
+    if (!inputs.length) return [];
+    return db.insert(postMetricSnapshots).values(inputs).returning();
+  },
+
+  async listPostSnapshots(externalPostId?: string) {
+    return externalPostId
+      ? db.select().from(postMetricSnapshots).where(eq(postMetricSnapshots.externalPostId, externalPostId)).orderBy(asc(postMetricSnapshots.capturedAt))
+      : db.select().from(postMetricSnapshots).orderBy(desc(postMetricSnapshots.capturedAt)).limit(500);
+  },
+
+  async getLatestPostSnapshot(externalPostId: string) {
+    const rows = await db
+      .select()
+      .from(postMetricSnapshots)
+      .where(eq(postMetricSnapshots.externalPostId, externalPostId))
+      .orderBy(desc(postMetricSnapshots.capturedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
+  /* ===== Account Metric Snapshots（规格 §41） ===== */
+  async createAccountSnapshot(input: typeof accountMetricSnapshots.$inferInsert) {
+    const rows = await db.insert(accountMetricSnapshots).values(input).returning();
+    return rows[0];
+  },
+
+  async listAccountSnapshots(socialAccountId?: string) {
+    return socialAccountId
+      ? db.select().from(accountMetricSnapshots).where(eq(accountMetricSnapshots.socialAccountId, socialAccountId)).orderBy(asc(accountMetricSnapshots.capturedAt))
+      : db.select().from(accountMetricSnapshots).orderBy(desc(accountMetricSnapshots.capturedAt)).limit(500);
+  },
+
+  /* ===== Topic Performance（规格 §45，反馈闭环） ===== */
+  async listTopicPerformances(period?: string) {
+    return period
+      ? db.select().from(topicPerformances).where(eq(topicPerformances.period, period)).orderBy(desc(topicPerformances.performanceScore))
+      : db.select().from(topicPerformances).orderBy(desc(topicPerformances.createdAt)).limit(200);
+  },
+
+  async getTopicPerformance(topicId: string, period: string) {
+    const rows = await db
+      .select()
+      .from(topicPerformances)
+      .where(and(eq(topicPerformances.topicId, topicId), eq(topicPerformances.period, period)))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
+  async upsertTopicPerformance(input: Omit<typeof topicPerformances.$inferInsert, "id" | "createdAt">) {
+    const existing = await this.getTopicPerformance(input.topicId, input.period);
+    if (existing) {
+      const rows = await db
+        .update(topicPerformances)
+        .set({ ...input, id: undefined, createdAt: undefined } as never)
+        .where(eq(topicPerformances.id, existing.id))
+        .returning();
+      return rows[0];
+    }
+    const rows = await db.insert(topicPerformances).values(input).returning();
+    return rows[0];
+  },
+};

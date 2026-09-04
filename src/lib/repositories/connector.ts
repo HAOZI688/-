@@ -1,0 +1,169 @@
+import { and, asc, desc, eq, or } from "drizzle-orm";
+import { db } from "@/lib/db";
+import {
+  connectorAccounts,
+  dataConnectors,
+  dataImportBatches,
+  dataSyncJobs,
+  externalPosts,
+  publications,
+} from "@/lib/db/schema";
+
+/**
+ * Connector Repository（规格 §80）：小豆芽 / CSV / 手动 连接器。
+ * V1 File Import 模式；API Mode 未来只替换实现（规格 §34）。
+ */
+export const connectorRepository = {
+  /* ===== Data Connectors ===== */
+  async listConnectors() {
+    return db.select().from(dataConnectors).orderBy(desc(dataConnectors.createdAt));
+  },
+
+  async getConnector(id: string) {
+    const rows = await db.select().from(dataConnectors).where(eq(dataConnectors.id, id)).limit(1);
+    return rows[0] ?? null;
+  },
+
+  async createConnector(input: typeof dataConnectors.$inferInsert) {
+    const rows = await db.insert(dataConnectors).values(input).returning();
+    return rows[0];
+  },
+
+  async updateConnector(id: string, patch: Partial<Omit<typeof dataConnectors.$inferSelect, "id" | "createdAt">>) {
+    const rows = await db
+      .update(dataConnectors)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(dataConnectors.id, id))
+      .returning();
+    return rows[0] ?? null;
+  },
+
+  /* ===== Connector × Social Account 映射（规格 §35） ===== */
+  async listConnectorAccounts(connectorId: string) {
+    return db
+      .select({ ca: connectorAccounts })
+      .from(connectorAccounts)
+      .where(eq(connectorAccounts.connectorId, connectorId))
+      .orderBy(asc(connectorAccounts.createdAt));
+  },
+
+  async getConnectorAccount(connectorId: string, socialAccountId: string) {
+    const rows = await db
+      .select()
+      .from(connectorAccounts)
+      .where(and(eq(connectorAccounts.connectorId, connectorId), eq(connectorAccounts.socialAccountId, socialAccountId)))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
+  async upsertConnectorAccount(connectorId: string, socialAccountId: string, externalAccountId?: string, externalAccountName?: string) {
+    const existing = await this.getConnectorAccount(connectorId, socialAccountId);
+    if (existing) {
+      const rows = await db
+        .update(connectorAccounts)
+        .set({ externalAccountId, externalAccountName, mappingStatus: externalAccountId ? "mapped" : existing.mappingStatus })
+        .where(eq(connectorAccounts.id, existing.id))
+        .returning();
+      return rows[0];
+    }
+    const rows = await db
+      .insert(connectorAccounts)
+      .values({ connectorId, socialAccountId, externalAccountId, externalAccountName, mappingStatus: externalAccountId ? "mapped" : "unmapped" })
+      .returning();
+    return rows[0];
+  },
+
+  /* ===== External Posts（规格 §36） ===== */
+  async listExternalPosts(opts?: { connectorId?: string; matchStatus?: string; limit?: number }) {
+    const where = [];
+    if (opts?.connectorId) where.push(eq(externalPosts.connectorId, opts.connectorId));
+    if (opts?.matchStatus) where.push(eq(externalPosts.matchStatus, opts.matchStatus as never));
+    const rows = await db
+      .select({ post: externalPosts, publication: publications })
+      .from(externalPosts)
+      .leftJoin(publications, eq(externalPosts.publicationId, publications.id))
+      .where(where.length ? and(...(where as [])) : undefined)
+      .orderBy(desc(externalPosts.publishedAt))
+      .limit(opts?.limit ?? 200);
+    return rows;
+  },
+
+  async getExternalPost(id: string) {
+    const rows = await db.select().from(externalPosts).where(eq(externalPosts.id, id)).limit(1);
+    return rows[0] ?? null;
+  },
+
+  /** 匹配规则：Post ID → URL → 平台+账号+时间+标题相似度 → 人工（规格 §37） */
+  async findExternalPost(connectorId: string, externalPostId?: string, externalUrl?: string) {
+    if (externalPostId) {
+      const rows = await db
+        .select()
+        .from(externalPosts)
+        .where(and(eq(externalPosts.connectorId, connectorId), eq(externalPosts.externalPostId, externalPostId)))
+        .limit(1);
+      if (rows[0]) return rows[0];
+    }
+    if (externalUrl) {
+      const rows = await db
+        .select()
+        .from(externalPosts)
+        .where(and(eq(externalPosts.connectorId, connectorId), eq(externalPosts.externalUrl, externalUrl)))
+        .limit(1);
+      return rows[0] ?? null;
+    }
+    return null;
+  },
+
+  async upsertExternalPost(input: typeof externalPosts.$inferInsert): Promise<{ post: typeof externalPosts.$inferSelect; created: boolean }> {
+    const existing = await this.findExternalPost(input.connectorId ?? "", input.externalPostId, input.externalUrl ?? undefined);
+    if (existing) {
+      const rows = await db
+        .update(externalPosts)
+        .set({ title: input.title ?? existing.title, publishedAt: input.publishedAt ?? existing.publishedAt, updatedAt: new Date() })
+        .where(eq(externalPosts.id, existing.id))
+        .returning();
+      return { post: rows[0], created: false };
+    }
+    const rows = await db.insert(externalPosts).values(input).returning();
+    return { post: rows[0], created: true };
+  },
+
+  async updateExternalPostMatch(postId: string, match: { publicationId?: string | null; matchStatus: "conflict" | "unmatched" | "suggested" | "confirmed"; matchConfidence?: string | null }) {
+    const rows = await db
+      .update(externalPosts)
+      .set({ ...match, updatedAt: new Date() })
+      .where(eq(externalPosts.id, postId))
+      .returning();
+    return rows[0] ?? null;
+  },
+
+  /* ===== Import Batches（规格 §38） ===== */
+  async createImportBatch(input: typeof dataImportBatches.$inferInsert) {
+    const rows = await db.insert(dataImportBatches).values(input).returning();
+    return rows[0];
+  },
+
+  async updateImportBatch(id: string, patch: Partial<Omit<typeof dataImportBatches.$inferSelect, "id" | "createdAt">>) {
+    const rows = await db.update(dataImportBatches).set(patch).where(eq(dataImportBatches.id, id)).returning();
+    return rows[0] ?? null;
+  },
+
+  async listImportBatches(limit = 50) {
+    return db.select().from(dataImportBatches).orderBy(desc(dataImportBatches.createdAt)).limit(limit);
+  },
+
+  /* ===== Sync Jobs（规格 §42） ===== */
+  async createSyncJob(input: typeof dataSyncJobs.$inferInsert) {
+    const rows = await db.insert(dataSyncJobs).values(input).returning();
+    return rows[0];
+  },
+
+  async updateSyncJob(id: string, patch: Partial<Omit<typeof dataSyncJobs.$inferSelect, "id" | "createdAt">>) {
+    const rows = await db.update(dataSyncJobs).set(patch).where(eq(dataSyncJobs.id, id)).returning();
+    return rows[0] ?? null;
+  },
+
+  async listSyncJobs(limit = 50) {
+    return db.select().from(dataSyncJobs).orderBy(desc(dataSyncJobs.createdAt)).limit(limit);
+  },
+};
