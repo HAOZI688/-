@@ -30,6 +30,8 @@ const NAV_GROUPS = [
     label: "总览",
     items: [
       { href: "/dashboard", label: "运营总览", icon: LayoutDashboard },
+      { href: "/planning", label: "本周计划", icon: CalendarDays },
+      { href: "/review", label: "待审核", icon: FileText },
       { href: "/topics", label: "Topic 中心", icon: Lightbulb },
       { href: "/topic-graph", label: "Topic 关系图谱", icon: Network },
     ],

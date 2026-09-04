@@ -1,4 +1,6 @@
 import { getDashboardStats, listTopics } from "@/lib/repo";
+import { orchestratorRepository, contentRepository, publicationRepository } from "@/lib/repositories";
+import { isAiConfigured } from "@/lib/ai/providers";
 import { Card, CardContent } from "@/components/ui/card";
 import { PriorityBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,15 +15,44 @@ import {
   WORKFLOW_TYPE_LABELS,
 } from "@/lib/labels";
 import { StatusBadge } from "@/components/shared/status-badge";
-import { previousCompleteWeek } from "@/lib/utils";
+import { isoWeekKey, previousCompleteWeek } from "@/lib/utils";
 import { format } from "date-fns";
 import Link from "next/link";
+import { generatePlanAction } from "@/app/actions/planning";
+import { confirmPlanAction, startProductionAction } from "@/app/actions/review";
 
 export const dynamic = "force-dynamic";
 
+const PLAN_STATUS_LABELS: Record<string, string> = {
+  draft: "已生成 · 待确认",
+  confirmed: "已确认 · 待生产",
+  production: "生产中",
+  completed: "已完成",
+  cancelled: "已取消",
+};
+
+/**
+ * Dashboard（V2 周一视图）：
+ * 顶部 = V2 运营流：上一自然周扫描状态 → [生成本周内容计划] → P0/P1 选题列表 → [确认并开始生产]
+ * 下方保留 V1 统计卡。全部真实落库。
+ */
 export default async function DashboardPage() {
   const week = previousCompleteWeek();
-  const [stats, topTopics] = await Promise.all([getDashboardStats(), listTopics()]);
+  const thisWeek = isoWeekKey(new Date());
+  const [stats, topTopics, plans, assets, pubs] = await Promise.all([
+    getDashboardStats(),
+    listTopics(),
+    orchestratorRepository.listPlans(4),
+    contentRepository.listAllAssets(200),
+    publicationRepository.list(),
+  ]);
+
+  const lastWeekPlan = plans.find((p) => p.weekPrefix === week.weekKey) ?? null;
+  const thisWeekPlan = plans.find((p) => p.weekPrefix === thisWeek) ?? null;
+  const thisItems = thisWeekPlan ? await orchestratorRepository.getPlanItems(thisWeekPlan.id) : [];
+  const pendingItems = thisItems.filter((i) => i.status === "pending");
+  const lastWeekRuns = stats.latestRuns.filter((r) => r.batchId?.startsWith(week.weekKey));
+  const aiReady = isAiConfigured();
 
   const countBy = (arr: { status?: string; count: number }[], key: string) =>
     arr.find((r) => r.status === key)?.count ?? 0;
@@ -32,33 +63,101 @@ export default async function DashboardPage() {
   const readyToPublish = countBy(stats.topicsByStatus, "ready_to_publish");
   const published = countBy(stats.topicsByStatus, "published");
 
+  const inReviewAssets = assets.filter((a) => a.asset.status === "in_review").length;
+  const confirmPubs = pubs.filter((p) => p.pub.status === "planned" || p.pub.status === "ready").length;
+  const totalReview = pendingItems.length + inReviewAssets + confirmPubs;
+
   const latestByType: Record<string, { status: string; batchId: string | null; createdAt: Date }> = {};
   for (const r of stats.latestRuns) {
     if (!latestByType[r.type]) latestByType[r.type] = { status: r.status, batchId: r.batchId, createdAt: r.createdAt };
   }
 
   const workflowCards = [
-    { key: "ai_weekly", label: "AI 周报", batch: `本周批次：${week.weekKey}-AI-WEEKLY` },
-    { key: "github_weekly", label: "GitHub 周榜", batch: `本周批次：${week.weekKey}-GITHUB` },
+    { key: "ai_weekly", label: "AI 周报", batch: `本周批次：${thisWeek}-AI-WEEKLY` },
+    { key: "github_weekly", label: "GitHub 周榜", batch: `本周批次：${thisWeek}-GITHUB` },
     { key: "evergreen", label: "常青知识", batch: "按知识库节奏" },
     { key: "wechat_deep_dive", label: "公众号深度专题", batch: "按专题排期" },
   ];
 
   return (
     <div className="space-y-4 p-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold">运营总览</h1>
-          <p className="text-xs text-zinc-500">
-            统计窗口：上一完整自然周 {format(week.start, "MM-dd")} ~ {format(week.end, "MM-dd")}（{week.weekKey}）
-          </p>
-        </div>
-        <div className="flex gap-2">
-          <Link href="/workflows"><Button variant="outline">生成本周内容计划</Button></Link>
-          <Link href="/workflows"><Button>确认并开始生产</Button></Link>
-        </div>
-      </div>
+      {/* V2 运营流 */}
+      <Card className="border-blue-100 bg-blue-50/40">
+        <CardContent className="space-y-3 p-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-lg font-semibold">本周内容运营</h1>
+              <p className="text-xs text-zinc-500">
+                统计窗口：上一完整自然周 {format(week.start, "MM-dd")} ~ {format(week.end, "MM-dd")}（{week.weekKey}）
+                <span className="ml-2">
+                  {aiReady ? (
+                    <span className="text-emerald-600">AI 已配置 · 真实调用</span>
+                  ) : (
+                    <span className="text-orange-600">演示模式（未配置 API Key）</span>
+                  )}
+                </span>
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {!thisWeekPlan && (
+                <form action={generatePlanAction.bind(null, thisWeek)}>
+                  <Button>生成本周内容计划</Button>
+                </form>
+              )}
+              {thisWeekPlan && thisWeekPlan.status === "draft" && (
+                <form action={confirmPlanAction.bind(null, thisWeekPlan.id)}>
+                  <Button>确认本周选题</Button>
+                </form>
+              )}
+              {thisWeekPlan && thisWeekPlan.status === "confirmed" && (
+                <form action={startProductionAction.bind(null, thisWeekPlan.id)}>
+                  <Button>确认并开始生产</Button>
+                </form>
+              )}
+              <Link href="/review">
+                <Button variant="outline">
+                  待审核 {totalReview > 0 ? `(${totalReview})` : ""}
+                </Button>
+              </Link>
+              <Link href="/planning"><Button variant="outline">计划详情</Button></Link>
+            </div>
+          </div>
 
+          {/* 上周扫描状态 */}
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            <MiniCard label="上周扫描" value={lastWeekPlan ? `已完成 · ${lastWeekPlan.status}` : "未执行"} sub={lastWeekPlan ? `${lastWeekPlan.weekPrefix}` : week.weekKey} />
+            <MiniCard label="上周工作流运行" value={String(lastWeekRuns.length)} sub="runs（批次含上周前缀）" />
+            <MiniCard label="本周计划" value={thisWeekPlan ? PLAN_STATUS_LABELS[thisWeekPlan.status] ?? thisWeekPlan.status : "未生成"} sub={thisWeekPlan ? `${thisItems.length} 项` : "点上方按钮生成"} />
+            <MiniCard label="待人工审核" value={String(totalReview)} sub={`选题 ${pendingItems.length} · 内容 ${inReviewAssets} · 发布 ${confirmPubs}`} />
+          </div>
+
+          {/* 本周选题简表（P0/P1 优先） */}
+          {thisItems.length > 0 && (
+            <div>
+              <div className="mb-1.5 text-[11px] font-semibold text-zinc-600">
+                本周选题（{thisItems.length} 项 · 待确认 {pendingItems.length}）
+              </div>
+              <ul className="grid gap-1.5 sm:grid-cols-2">
+                {[...thisItems]
+                  .sort((a, b) => (a.priority === "P0" ? -1 : b.priority === "P0" ? 1 : Number(b.topicScore) - Number(a.topicScore)))
+                  .slice(0, 6)
+                  .map((item) => (
+                    <li key={item.id} className="flex items-center gap-2 rounded-md border border-zinc-100 bg-white px-2.5 py-1.5">
+                      <Link href={`/topics/${item.topicId}`} className="min-w-0 truncate text-xs font-medium hover:text-blue-600">
+                        {item.topicId}
+                      </Link>
+                      <StatusBadge label={WORKFLOW_TYPE_LABELS[item.workflowType]} tone="blue" />
+                      <PriorityBadge priority={item.priority as never} />
+                      <span className="ml-auto text-[10px] text-zinc-400">{item.topicScore}</span>
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* V1 统计 */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 lg:grid-cols-6">
         <StatCard label="P0 Topic" value={p0} tone="red" />
         <StatCard label="P1 Topic" value={p1} tone="orange" />
@@ -127,6 +226,16 @@ export default async function DashboardPage() {
           </Table>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function MiniCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
+  return (
+    <div className="rounded-lg border border-zinc-100 bg-white px-3 py-2">
+      <div className="text-[10px] text-zinc-400">{label}</div>
+      <div className="text-[13px] font-semibold text-zinc-800">{value}</div>
+      {sub && <div className="text-[10px] text-zinc-400">{sub}</div>}
     </div>
   );
 }

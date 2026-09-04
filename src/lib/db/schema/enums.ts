@@ -294,3 +294,25 @@ export const auditAction = pgEnum("audit_action", [
   "lead_create",
   "system",
 ]);
+
+/* ===== V2 Orchestrator（增量，不触碰 V1 核心枚举） ===== */
+
+/** 周计划状态（Orchestrator 生成 → 用户确认 → 生产 → 完成） */
+export const weeklyPlanStatus = pgEnum("weekly_plan_status", [
+  "draft",
+  "confirmed",
+  "production",
+  "completed",
+  "cancelled",
+]);
+
+/** 周计划项状态：pending（待用户确认选题）→ approved → running → completed/failed */
+export const weeklyPlanItemStatus = pgEnum("weekly_plan_item_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "running",
+  "completed",
+  "failed",
+  "skipped",
+]);

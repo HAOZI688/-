@@ -11,6 +11,8 @@ import { db } from "@/lib/db";
 import { workflowRuns, workflowTasks } from "@/lib/db/schema";
 import { AI_PROMPTS_DIR } from "@/lib/ai/prompt-registry";
 import { chat, isAiConfigured } from "@/lib/ai/providers";
+import { workflowRepository, orchestratorRepository } from "@/lib/repositories";
+import { writeBackRunOutputs } from "@/lib/workflows/writeback";
 import type { WorkflowRun } from "@/lib/db/schema";
 
 export type WorkflowType = "orchestrator" | "ai_weekly" | "github_weekly" | "evergreen" | "wechat_deep_dive";
@@ -92,6 +94,15 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
 
   await db.update(workflowRuns).set({ status: "running", startedAt: new Date() }).where(eq(workflowRuns.id, runId));
 
+  // V2：输入快照落库（WorkflowInput 表）
+  await orchestratorRepository.createWorkflowInput(runId, opts.workflowType, "main", {
+    topicId: opts.topicId ?? null,
+    batchId: opts.batchId ?? null,
+    sourcePacketId: opts.sourcePacketId ?? null,
+    payload: opts.inputPayload ?? {},
+    promptFile: `ai-prompts/${opts.workflowType}/main.md`,
+  });
+
   try {
     const prompt = await loadPrompt(opts.workflowType);
     const results: Record<string, unknown> = {};
@@ -109,6 +120,7 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
         })
         .returning();
 
+      const stepStart = Date.now();
       try {
         let output: Record<string, unknown>;
         if (demo) {
@@ -118,11 +130,23 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
             payload: opts.inputPayload ?? {},
           };
         } else {
-          const res = await chat([
-            { role: "system", content: `你是内容运营平台的工作流执行器。请严格遵循以下工作流提示词执行步骤「${step.label}」，并输出 JSON。\n\n${prompt}` },
-            { role: "user", content: `步骤：${step.key}\n输入：${JSON.stringify(opts.inputPayload ?? {})}` },
-          ]);
+          const res = await chat(
+            [
+              { role: "system", content: `你是内容运营平台的工作流执行器。请严格遵循以下工作流提示词执行步骤「${step.label}」，并输出 JSON。\n\n${prompt}` },
+              { role: "user", content: `步骤：${step.key}\n输入：${JSON.stringify(opts.inputPayload ?? {})}` },
+            ],
+            { maxTokens: 4000 },
+          );
           output = { provider: res.provider, model: res.model, text: res.text.slice(0, 8000) };
+          // V2：AI 用量留痕（规格 §58）
+          if (res.usage) {
+            await workflowRepository.logAiUsage({
+              workflowRunId: runId,
+              inputTokens: res.usage.inputTokens,
+              outputTokens: res.usage.outputTokens,
+              latency: Date.now() - stepStart,
+            });
+          }
         }
         results[step.key] = output;
         await db.update(workflowTasks).set({ status: "completed", output, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
@@ -137,11 +161,33 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
       .update(workflowRuns)
       .set({ status: "completed", output: { steps: results, demo }, completedAt: new Date() })
       .where(eq(workflowRuns.id, runId));
+
+    // V2：输出写回（Derived Topic / Content Asset）+ 依赖 DAG 推进
+    const completedRun = await workflowRepository.getRun(runId);
+    if (completedRun) {
+      await writeBackRunOutputs(runId, {
+        workflowType: opts.workflowType,
+        topicId: completedRun.topicId,
+        demo: Boolean(completedRun.output && typeof completedRun.output === "object" && (completedRun.output as { demo?: boolean }).demo),
+      });
+      await advanceDependenciesOf(runId);
+    }
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     await db
       .update(workflowRuns)
       .set({ status: "failed", error: msg, completedAt: new Date() })
       .where(eq(workflowRuns.id, runId));
+    await advanceDependenciesOf(runId);
+  }
+}
+
+/** V2：run 结束后通知 Orchestrator 推进依赖（动态 import 避免循环依赖） */
+async function advanceDependenciesOf(runId: string) {
+  try {
+    const { orchestratorService } = await import("@/lib/services/orchestrator");
+    await orchestratorService.advanceDependencies(runId);
+  } catch (e) {
+    console.error(`advanceDependencies(${runId}) failed:`, e instanceof Error ? e.message : e);
   }
 }

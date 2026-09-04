@@ -28,14 +28,27 @@
 
 ## 输出格式（JSON）
 
+最终步骤必须输出以下 JSON（字段名与 writeback 契约严格一致，缺失字段用 []）：
+
 ```json
 {
-  "selected": [{ "title": "…", "scores": { "b2bRelevance": 8 }, "priority": "P1" }],
-  "rejected": [{ "title": "…", "reason": "…" }],
-  "script": "…90秒口播全文…",
-  "outline": ["1. 开场悬念：…", "…"]
+  "outputs": [
+    { "outputType": "ai_weekly_script", "label": "90秒口播稿", "content": "…全文…" },
+    { "outputType": "wechat_outline", "label": "公众号12段提纲", "content": "1. 开场悬念：…\n…" }
+  ],
+  "derivedTopics": [
+    { "title": "…", "description": "…", "b2bRelevance": 8, "trafficPotential": 7, "conversionPotential": 6, "timeliness": 9, "contentValue": 8, "tags": ["…"] }
+  ],
+  "contentAssets": [
+    { "assetType": "ai_weekly_script", "platform": "wechat", "title": "…", "content": "…口播稿…", "contentRole": "traffic", "cta": "…" },
+    { "assetType": "wechat_article", "platform": "wechat", "title": "…", "content": "…提纲…", "contentRole": "cognition", "cta": "…" }
+  ]
 }
 ```
+
+- `outputs`：可追溯的原始产出（口播稿 / 提纲原文）
+- `derivedTopics`：从本期事件延伸出的新选题（走查重，重复则留空数组）
+- `contentAssets`：直接可进「待审核」的内容资产，`assetType` 必须是：`ai_weekly_script` / `wechat_article` / `short_video_script`
 
 ## 纪律
 - 事实只来自核验通过的 Source_Packet；无来源的猜测必须标注为「观点」

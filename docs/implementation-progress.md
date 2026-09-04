@@ -1,6 +1,6 @@
 # Implementation Progress（实施进度）
 
-> **状态**：V1 核心闭环已实现（本文件随每次里程碑更新）。
+> **状态**：V1 核心闭环已实现（tag v1.0.0，43 表冻结）；V2 自动运行能力已实现（47 表，P0 全部完成）。
 > 覆盖：模块清单 / 目录结构 / 迁移状态 / 页面清单 / AI 工作流 / 数据集成 / 已知问题 / 未完成项 / 下一阶段建议。
 
 ---
@@ -99,6 +99,32 @@ drizzle/0000_*_*.sql + 0001_*_*.sql      # 已应用
 | 2 | seed 中 `returning()` 未解构导致外键全空 | 批量修复 13 处解构 |
 | 3 | weekly-planning 对 numeric 列做算术比较（TS2362） | Number() 转换后再比较 |
 
+## 6.2 V2 里程碑（自动运行能力，2026-09-04）
+
+> V1 冻结后增量开发（43 表只增不改）：新增 4 表（workflow_dependencies / workflow_inputs / weekly_plans / weekly_plan_items），共 47 表。V1 已 tag v1.0.0 并推送。
+
+| 里程碑 | 状态 | 说明 |
+|---|---|---|
+| P0 Content Orchestrator | ✅ | 扫描候选（ready_for_production + GitHub selected）→ 五维评分（topic_scoring_config 权重）→ 历史表现加成（Topic Feedback）→ 路由 + 配额 → weekly_plans draft |
+| P0 四个真实 AI Workflow | ✅ | ai_weekly / github_weekly / evergreen / wechat_deep_dive，结构化输出 schema 与 writeback 对齐 |
+| P0 Workflow Dependency（DAG） | ✅ | workflow_dependencies 表：周报 → 常青 → 公众号；engine 完成自动 advanceDependenciesOf（动态 import 避免循环） |
+| P0 Human Gate 三道门禁 | ✅ | /review：选题确认 / 内容审核 / 发布确认；全部落 audit_logs，绝不自动发布 |
+| P1 Scheduler | ✅ | `/api/cron/scheduler`（POST/GET）：周一自动生成**上一自然周**计划 draft（等人工确认）；crontab 示例见路由注释 |
+| P1 Topic Feedback | ✅ | previousWeekOf 取上周表现，评分加成落库 |
+| 新页面 | ✅ | /planning（周计划 + DAG 视图）、/review（三道门禁待审核聚合）；dashboard 增加周一视图 |
+
+### 6.3 V2 表单契约与 Server Action 发现（Next.js 16.3.4）
+
+| # | 发现 | 结论 |
+|---|---|---|
+| 1 | server action 返回数据会触发 TS2322 表单契约错误 | 全部 action 改为 `Promise<void>`，数据读库渲染 |
+| 2 | `actionOf` wrapper 包装 bound action → render 阶段执行 revalidatePath → 全部 V2 页面 500 | 移除 wrapper，表单直接 `<form action={action.bind(null, arg)}>` |
+| 3 | fetch-action 手造 multipart body 返回 500 "Connection closed"（曾误判为生产环境 bug） | 根因：手造 body 与浏览器格式不符。真实浏览器（CDP 实测）：简单 bound 参数用 **text/plain flight 编码**（`encodeReply([arg])`），非 multipart；点击 → 200 + DAG 跑通 |
+| 4 | MPA 渐进增强路径 | 普通 form POST（无 Next-Action header）同样完整可用，跑通 DAG 全链路 |
+| 5 | 绑定参数的 form 编码 | `$ACTION_REF_0`（空）+ `$ACTION_0:1`（bound JSON）+ `$ACTION_0:0`（ref JSON），REF→args→ref 顺序 |
+| 6 | 可选尾参 + bind 破坏签名 | rejectAssetAction 拆为 approve/revision 两个 1 参 action |
+| 7 | 服务器运行方式 | dev :3000（用户）/ prod :3210（`next start`，日志 /tmp/contentos-server.log）；DB 查询 `node --import tsx -e "import postgres from 'postgres'; ..."`
+
 ## 7. 已知问题（与基线偏差）
 
 | # | 问题 | 影响 | 处理 |
@@ -111,13 +137,14 @@ drizzle/0000_*_*.sql + 0001_*_*.sql      # 已应用
 
 ## 8. 未完成项（V1 收尾 / V2）
 
-- [ ] build 全绿 + 22 路由冒烟（下一步）
-- [ ] CSV 导入端到端演练并回填验收记录
-- [ ] 定时调度（weekly 自动触发）→ V2
-- [ ] 认证接入（users.role 启用）→ V2
-- [ ] trend_radar_items 页面 → V2
-- [ ] 账号涨粉归因模型 → V2
-- [ ] 发布平台 OpenAPI 接入 → V2（当前人工发布回填链接）
+- [x] build 全绿 + 22 路由冒烟 ✅（V1 封版 v1.0.0；V2 后 8 端点复测 200）
+- [x] CSV 导入端到端演练并回填验收记录 ✅
+- [x] 定时调度（weekly 自动触发）✅（V2 P1：/api/cron/scheduler，周一自动生成上一自然周 draft，人工确认后才生产）
+- [ ] 认证接入（users.role 启用）→ V2 之后（用户明确暂不做认证/RBAC）
+- [ ] trend_radar_items 页面 → V2 之后
+- [ ] 账号涨粉归因模型 → V2 之后
+- [ ] 发布平台 OpenAPI 接入 → V2 之后（当前人工发布回填链接）
+- [ ] 小豆芽 API Mode → V2 之后
 
 ## 9. 下一阶段建议（V2 优先级）
 

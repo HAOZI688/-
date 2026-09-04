@@ -17,3 +17,4 @@ export * from "./ai-meta";
 export * from "./audit";
 export * from "./scoring";
 export * from "./trend";
+export * from "./orchestrator";

@@ -33,16 +33,28 @@
 
 ## 输出格式（JSON）
 
+最终步骤必须输出以下 JSON（字段名与 writeback 契约严格一致，缺失字段用 []）：
+
 ```json
 {
   "role": "cognition",
   "title": "…",
-  "outline": ["1. …", "…"],
-  "draft": "…全文…",
-  "imagePlan": [{ "section": 5, "asset": "product-backend.png", "note": "官方截图" }],
-  "cta": "点击预约 Demo"
+  "outputs": [
+    { "outputType": "wechat_outline", "label": "12段提纲", "content": "1. …\n…" },
+    { "outputType": "wechat_draft", "label": "成稿", "content": "…全文…" }
+  ],
+  "derivedTopics": [
+    { "title": "…", "description": "…", "b2bRelevance": 8, "trafficPotential": 6, "conversionPotential": 7, "timeliness": 5, "contentValue": 9, "tags": ["…"] }
+  ],
+  "contentAssets": [
+    { "assetType": "wechat_article", "platform": "wechat", "title": "…", "content": "…全文…", "contentRole": "cognition", "cta": "点击预约 Demo" }
+  ]
 }
 ```
+
+- `outputs`：可追溯的提纲与成稿原文
+- `derivedTopics`：延伸选题（走查重，重复则留空数组）
+- `contentAssets`：直接可进「待审核」的内容资产，`assetType` 必须是：`wechat_article` / `xiaohongshu`
 
 ## 纪律
 - 不自动发布：产出后进入 review，由人工审核修改

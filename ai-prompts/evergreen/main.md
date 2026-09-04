@@ -20,15 +20,28 @@
 
 ## 输出格式（JSON）
 
+最终步骤必须输出以下 JSON（字段名与 writeback 契约严格一致，缺失字段用 []）：
+
 ```json
 {
   "concept": "结构化输出",
   "knowledgeStatus": "deep_explanation",
-  "derivedTopics": [{ "title": "…", "type": "knowledge" }],
-  "assets": [{ "type": "short_video_script", "title": "…", "role": "cognition" }],
-  "nextAction": "…"
+  "outputs": [
+    { "outputType": "evergreen_concept", "label": "概念拆解", "content": "…" },
+    { "outputType": "evergreen_bank", "label": "知识库沉淀", "content": "…" }
+  ],
+  "derivedTopics": [
+    { "title": "…", "description": "…", "b2bRelevance": 8, "trafficPotential": 7, "conversionPotential": 6, "timeliness": 4, "contentValue": 9, "tags": ["knowledge", "…"] }
+  ],
+  "contentAssets": [
+    { "assetType": "short_video_script", "platform": "wechat", "title": "…", "content": "…", "contentRole": "cognition", "cta": "…" }
+  ]
 }
 ```
+
+- `outputs`：可追溯的概念拆解与知识库沉淀原文
+- `derivedTopics`：衍生选题（`topic_type=knowledge`，最多 3 个，必须可溯源）
+- `contentAssets`：直接可进「待审核」的内容资产，`assetType` 必须是：`short_video_script` / `wechat_article` / `infographic`
 
 ## 纪律
 - 一次只生产一个主 Topic，避免内容摊薄

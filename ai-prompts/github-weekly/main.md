@@ -22,13 +22,27 @@
 
 ## 输出格式（JSON）
 
+最终步骤必须输出以下 JSON（字段名与 writeback 契约严格一致，缺失字段用 []）：
+
 ```json
 {
   "snapshot": "2026W36-AI-WEEKLY",
   "items": [{ "rank": 1, "repository": "…", "weeklyGrowth": "+1250", "selected": true }],
-  "promoted": [{ "title": "GitHub 周榜观察：…", "topicId": "…" }]
+  "outputs": [
+    { "outputType": "github_weekly_snapshot", "label": "本周快照", "content": "…JSON 原文…" }
+  ],
+  "derivedTopics": [
+    { "title": "GitHub 周榜观察：…", "description": "…", "b2bRelevance": 8, "trafficPotential": 7, "conversionPotential": 6, "timeliness": 9, "contentValue": 8, "tags": ["github", "…"] }
+  ],
+  "contentAssets": [
+    { "assetType": "github_card", "platform": "wechat", "title": "…", "content": "…", "contentRole": "cognition", "cta": "…" }
+  ]
 }
 ```
+
+- `outputs`：可追溯的原始快照产出
+- `derivedTopics`：从本期榜单提升出的新选题（`topic_type=hot`，走 Orchestrator 查重）
+- `contentAssets`：直接可进「待审核」的内容资产，`assetType` 必须是：`github_card` / `short_video_script`
 
 ## 纪律
 - 数字（周增长/总星）以快照当天的 GitHub 数据为准，回填时不得篡改

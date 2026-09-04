@@ -35,6 +35,7 @@ async function reset() {
     TRUNCATE TABLE
       audit_logs, ai_usage_logs, prompt_versions, prompt_templates, ai_models,
       workflow_outputs, workflow_tasks, workflow_runs, workflow_templates,
+      workflow_inputs, workflow_dependencies, weekly_plan_items, weekly_plans,
       github_snapshot_items, github_snapshots,
       knowledge_relations, knowledge_topics,
       topic_relations, topic_tags, tags,
@@ -532,6 +533,23 @@ export async function seed() {
     active: false, inputPrice: "2.5", outputPrice: "10", contextWindow: 128000,
     capabilities: ["vision", "tool_use"], metadata: { tier: "evaluation" },
   });
+
+  console.log("🔗 Workflow Dependencies（V2 DAG：周报 → 常青 → 公众号）…");
+  await db.insert(schema.workflowDependencies).values([
+    { parentWorkflowType: "ai_weekly", childWorkflowType: "evergreen", gate: "all" },
+    { parentWorkflowType: "github_weekly", childWorkflowType: "evergreen", gate: "all" },
+    { parentWorkflowType: "evergreen", childWorkflowType: "wechat_deep_dive", gate: "all" },
+  ]);
+
+  console.log("🗓️ V2 周计划（上一自然周：Orchestrator 生成 + Human Gate 确认）…");
+  {
+    const { orchestratorService } = await import("../services/orchestrator");
+    const { previousCompleteWeek } = await import("../utils");
+    const prevWeek = previousCompleteWeek().weekKey;
+    const generated = await orchestratorService.generateWeeklyPlan(prevWeek);
+    await orchestratorService.confirmPlan(generated.plan.id);
+    console.log(`   ✅ ${prevWeek} 计划已生成并确认（${generated.items.length} 项）`);
+  }
 
   console.log("🚀 Workflow Runs（5 种状态覆盖）+ Tasks + Outputs…");
   const [runGw] = await db.insert(schema.workflowRuns).values({
