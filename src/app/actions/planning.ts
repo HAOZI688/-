@@ -8,5 +8,6 @@ export async function generatePlanAction(weekPrefix: string) {
   await orchestratorService.generateWeeklyPlan(weekPrefix);
   revalidatePath("/planning");
   revalidatePath("/review");
+  revalidatePath("/weekly-plan");
   revalidatePath("/dashboard");
 }

@@ -1,6 +1,6 @@
 # Implementation Progress（实施进度）
 
-> **状态**：V1 核心闭环已实现（tag v1.0.0，43 表冻结）；V2 自动运行能力已实现（47 表，P0 全部完成）。
+> **状态**：V1 核心闭环已实现（tag v1.0.0，43 表冻结）；V2 自动运行能力已实现（47 表，P0 全部完成）；**V3 Production Workbench 已交付（58 表，QA 全绿）**。
 > 覆盖：模块清单 / 目录结构 / 迁移状态 / 页面清单 / AI 工作流 / 数据集成 / 已知问题 / 未完成项 / 下一阶段建议。
 
 ---
@@ -29,14 +29,14 @@ src/
 ├─ app/actions/import.ts         # server action：小豆芽 CSV 导入
 ├─ components/{layout,shared,ui}/
 ├─ lib/
-│  ├─ db/{index,seed.ts,schema/19 文件}   # drizzle 43 表
-│  ├─ repositories/ 12 个 + index.ts      # 规格 §80
+│  ├─ db/{index,seed.ts,schema/24 文件}   # drizzle 58 表（V3 新增 15 表）
+│  ├─ repositories/ 16 个 + index.ts      # 规格 §80（+trend/attribution/notification）
 │  ├─ repo.ts                            # 兼容层（旧页面 API 转发）
-│  ├─ services/{topic-score,weekly-planning,metric-normalization,topic-performance}.ts
+│  ├─ services/（+trend-radar/trend-scoring/attribution/account-growth-baseline/connector-sync/notification/topic-performance-v2）
 │  ├─ connectors/{csv,xiaodouya}.ts      # 自有 RFC 4180 解析器
 │  └─ ai/{providers,prompt-registry}.ts + workflows/engine.ts
 ai-prompts/{orchestrator,ai-weekly,github-weekly,evergreen,wechat-deep-dive}/
-drizzle/0000_*_*.sql + 0001_*_*.sql      # 已应用
+drizzle/0000_*_*.sql + 0001 + 0002 + 0003 + 0004_v3_workbench.sql   # 已应用（0004 只增不改）
 ```
 
 ## 3. 迁移与 Seed 状态
@@ -125,6 +125,29 @@ drizzle/0000_*_*.sql + 0001_*_*.sql      # 已应用
 | 6 | 可选尾参 + bind 破坏签名 | rejectAssetAction 拆为 approve/revision 两个 1 参 action |
 | 7 | 服务器运行方式 | dev :3000（用户）/ prod :3210（`next start`，日志 /tmp/contentos-server.log）；DB 查询 `node --import tsx -e "import postgres from 'postgres'; ..."`
 
+## 6.4 V3 Production Workbench（2026-09-04 交付）
+
+> V3 全部为增量：迁移 0004（新增 15 表 → 58 表，V1/V2 表零改动）；新 Repository/Services 按实体分层；
+> **禁止 V3 页面硬编码 mock**（仅 Seed 开发数据）；Server Action 一律 `返回 void` + 真实浏览器表单（docs 06 §6.3）。
+
+| 能力 | 实现 | 验证 |
+|---|---|---|
+| Production Workbench（10 页面） | /dashboard 升级 + /weekly-plan + /production + /review Tabs + /trend-radar(+[id]) + /analytics/attribution + /notifications + /connectors/xiaodouya(+mappings) + /api/search | 22 路由冒烟 22/22 |
+| Dashboard Action Center | 状态机：无计划→生成本周计划 / draft→确认本周选题 / confirmed→确认并开始生产 / production→链接 | E2E #2-3（真实 Flight POST 两条） |
+| Weekly Planning V2 | 每项记录 base/trend/perf/conversion/gap 全部 adjustment + final_score + reason_codes；公式说明卡 | E2E #4 |
+| Orchestrator V3 数学 | trendAdjustment=(trendScore-5)×0.3；perf×0.2；conv×0.15；gap 无资产且无知识+0.5；clamp(0,10)；priority ≥8.5 P0 / ≥7 P1 | seed 计划项可见 |
+| Trend Radar | 8 信号评分（trend_scoring_config 权重）+ 状态机（rising/declining/emerging/stable）+ 覆盖状态 + Trend→Topic Approval Gate + 快照时间线；详情路由业务 ID trend_key（兼容 UUID） | E2E #7；/trend-radar/agent-skills 200 |
+| Follower Attribution v1 | 28 天基线（排除 >2σ / >5×median 异常日）→ Incremental → 概率分配（0.4/0.3/0.2/0.1）→ high_confidence ≥0.6 / probable ≥0.35 / assisted；evidence jsonb 禁 LLM 猜测；幂等 getRunByPeriod | E2E #9 |
+| 小豆芽 Production Mode | Adapter 契约（api/file_import）；API Mode 未配置不伪造 endpoint；CSV detectMapping→模板命中→幂等导入；未匹配手动匹配；Freshness <48h fresh / 48h-168h aging / >168h stale | E2E #10-11 |
+| Notification Center | 9 类型（weekly_plan_ready/workflow_failed/content_needs_review/publication_needs_confirmation/data_sync_failed/unmatched_external_post/metrics_stale/trend_p0_detected/attribution_completed），severity + read 流 | E2E #8 |
+| Topic Performance V2 | topic_performance_scores（6 维 + recommendation + reason_codes + config_version v2.1）+ 兼容回写 V1 performanceScore | seed 6 行 |
+| Config Version Trace | trends.config_version / attribution_runs.config_version / topic_performance_scores.config_version / trend_scoring_config.active | 复盘可查 |
+| 全局搜索 | ⌘K → POST /api/search（topics/trends/assets/publications ILIKE 聚合，href 用业务 ID） | E2E #6 |
+
+**QA 结果（docs/19）**：tsc 零错误 ✅；pnpm build ✅；Route Smoke 22/22 ✅（/templates N/A）；Browser E2E 12/12 ✅（CDP 真实浏览器，2 条 Flight POST 网络确认）；Data Model Audit docs/15 更新 PASS ✅。
+
+**交付期修复的真实缺陷**：`/trend-radar/{非UUID}` 曾 500（PG 22P02）→ getTrend 先正则判定 UUID；子查询走 trend.id；列表/搜索 href 改 trend_key。修复后 200/200/404 三态验证 + E2E 重跑 12/12。
+
 ## 7. 已知问题（与基线偏差）
 
 | # | 问题 | 影响 | 处理 |
@@ -140,15 +163,19 @@ drizzle/0000_*_*.sql + 0001_*_*.sql      # 已应用
 - [x] build 全绿 + 22 路由冒烟 ✅（V1 封版 v1.0.0；V2 后 8 端点复测 200）
 - [x] CSV 导入端到端演练并回填验收记录 ✅
 - [x] 定时调度（weekly 自动触发）✅（V2 P1：/api/cron/scheduler，周一自动生成上一自然周 draft，人工确认后才生产）
-- [ ] 认证接入（users.role 启用）→ V2 之后（用户明确暂不做认证/RBAC）
-- [ ] trend_radar_items 页面 → V2 之后
-- [ ] 账号涨粉归因模型 → V2 之后
-- [ ] 发布平台 OpenAPI 接入 → V2 之后（当前人工发布回填链接）
-- [ ] 小豆芽 API Mode → V2 之后
+- [x] Trend Radar 页面 + Trend→Topic Gate ✅（V3）
+- [x] 账号涨粉归因模型 ✅（V3 attribution v1，含 28 天基线 + 概率分配）
+- [x] 小豆芽 Connector Production Mode（File Import 一等能力 + 未匹配手动匹配 + 映射模板）✅（V3）
+- [x] Notification Center（9 类型）✅（V3）
+- [x] Topic Performance V2 + Weekly Planning V2（adjustment 明细）✅（V3）
+- [ ] 认证接入（users.role 启用）→ 用户明确暂不做认证/RBAC
+- [ ] 发布平台 OpenAPI 接入 → 当前人工发布回填链接
+- [ ] 小豆芽 API Mode → 需官方 API Contract 确认后接入（V3 已预留 Adapter 契约，未配置不伪造 endpoint）
 
-## 9. 下一阶段建议（V2 优先级）
+## 9. 下一阶段建议（V3 之后）
 
-1. **定时 Orchestrator**：weekly scheduling（周一 09:00 自动触发，仍保留人工门禁）；
-2. **API Mode 连接器**：按 docs/13 §8 替换导入实现；
-3. **多工作区**：workspaces/users 已建表，接入认证即用；
-4. **指标阈值配置化**：topic_performance 四维权重进配置表。
+1. **小豆芽 API Mode**：拿到官方 API Contract 后按 Adapter 契约实现（docs/18 §1，testConnection 已预留）；当前 File Import 为默认且可用；
+2. **认证接入**：workspaces/users 已建表，接入认证即用；
+3. **归因模型 v2**：接入小豆芽 API 作品级播放/主页数据后提升 direct 占比（当前概率分配 v1 已可解释）；
+4. **指标阈值配置化**：topic_performance 权重与 freshness 阈值（48h/168h）进配置表；
+5. **趋势信号扩展**：trend_scoring_config 权重已可配置，可加更多信号源（如全网舆情平台，属规格外扩展需另行确认）。

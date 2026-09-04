@@ -19,6 +19,7 @@ export async function confirmPlanAction(planId: string) {
   await orchestratorService.confirmPlan(planId);
   revalidatePath("/review");
   revalidatePath("/planning");
+  revalidatePath("/weekly-plan");
   revalidatePath("/dashboard");
 }
 
@@ -26,6 +27,7 @@ export async function rejectPlanItemAction(itemId: string) {
   await orchestratorService.rejectPlanItem(itemId);
   revalidatePath("/review");
   revalidatePath("/planning");
+  revalidatePath("/weekly-plan");
 }
 
 /** Gate 1 通过后：开始生产（触发 DAG 根节点） */
@@ -33,6 +35,8 @@ export async function startProductionAction(planId: string) {
   await orchestratorService.startProduction(planId);
   revalidatePath("/review");
   revalidatePath("/planning");
+  revalidatePath("/weekly-plan");
+  revalidatePath("/production");
   revalidatePath("/workflows");
   revalidatePath("/dashboard");
 }

@@ -165,11 +165,24 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
     // V2：输出写回（Derived Topic / Content Asset）+ 依赖 DAG 推进
     const completedRun = await workflowRepository.getRun(runId);
     if (completedRun) {
-      await writeBackRunOutputs(runId, {
+      const writeback = await writeBackRunOutputs(runId, {
         workflowType: opts.workflowType,
         topicId: completedRun.topicId,
         demo: Boolean(completedRun.output && typeof completedRun.output === "object" && (completedRun.output as { demo?: boolean }).demo),
       });
+      // V3：产出内容资产 → 通知进入审核队列（content_needs_review）
+      if (writeback.contentAssets > 0) {
+        const { notificationService } = await import("@/lib/services/notification");
+        await notificationService.notify({
+          type: "content_needs_review",
+          title: `${writeback.contentAssets} 条内容待审核`,
+          message: `${opts.workflowType} 工作流产出了新内容资产，进入 Review Workbench 审核。`,
+          link: "/review",
+          entityType: "workflow_runs",
+          entityId: runId,
+          severity: "info",
+        });
+      }
       await advanceDependenciesOf(runId);
     }
   } catch (e) {
@@ -178,6 +191,21 @@ async function executeRun(runId: string, opts: RunWorkflowOptions) {
       .update(workflowRuns)
       .set({ status: "failed", error: msg, completedAt: new Date() })
       .where(eq(workflowRuns.id, runId));
+    // V3：失败通知（workflow_failed）+ 依赖 DAG 推进
+    try {
+      const { notificationService } = await import("@/lib/services/notification");
+      await notificationService.notify({
+        type: "workflow_failed",
+        title: `工作流运行失败（${opts.workflowType}）`,
+        message: msg.slice(0, 200),
+        link: "/production",
+        entityType: "workflow_runs",
+        entityId: runId,
+        severity: "error",
+      });
+    } catch {
+      /* 通知失败不阻断推进 */
+    }
     await advanceDependenciesOf(runId);
   }
 }

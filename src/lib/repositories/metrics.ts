@@ -6,6 +6,7 @@ import {
   metricDefinitions,
   metricMappings,
   postMetricSnapshots,
+  topicPerformanceScores,
   topicPerformances,
 } from "@/lib/db/schema";
 import { topics } from "@/lib/db/schema";
@@ -101,6 +102,17 @@ export const metricsRepository = {
       : db.select().from(accountMetricSnapshots).orderBy(desc(accountMetricSnapshots.capturedAt)).limit(500);
   },
 
+  /** 账号最新快照（Metric Freshness 判定源） */
+  async getLatestAccountSnapshot(socialAccountId: string) {
+    const rows = await db
+      .select()
+      .from(accountMetricSnapshots)
+      .where(eq(accountMetricSnapshots.socialAccountId, socialAccountId))
+      .orderBy(desc(accountMetricSnapshots.capturedAt))
+      .limit(1);
+    return rows[0] ?? null;
+  },
+
   /* ===== Topic Performance（规格 §45，反馈闭环） ===== */
   async listTopicPerformances(period?: string) {
     return period
@@ -129,5 +141,39 @@ export const metricsRepository = {
     }
     const rows = await db.insert(topicPerformances).values(input).returning();
     return rows[0];
+  },
+
+  /* ===== Topic Performance V2（V3：全维度评分明细，V1 表保持冻结） ===== */
+  async upsertTopicPerformanceScore(input: Omit<typeof topicPerformanceScores.$inferInsert, "id" | "createdAt">) {
+    const existing = await db
+      .select()
+      .from(topicPerformanceScores)
+      .where(and(eq(topicPerformanceScores.topicId, input.topicId), eq(topicPerformanceScores.period, input.period)))
+      .limit(1);
+    if (existing[0]) {
+      const rows = await db
+        .update(topicPerformanceScores)
+        .set({ ...input, id: undefined, createdAt: undefined } as never)
+        .where(eq(topicPerformanceScores.id, existing[0].id))
+        .returning();
+      return rows[0];
+    }
+    const rows = await db.insert(topicPerformanceScores).values(input).returning();
+    return rows[0];
+  },
+
+  async listTopicPerformanceScores(period?: string, limit = 200) {
+    return period
+      ? db.select().from(topicPerformanceScores).where(eq(topicPerformanceScores.period, period)).orderBy(desc(topicPerformanceScores.performanceScore)).limit(limit)
+      : db.select().from(topicPerformanceScores).orderBy(desc(topicPerformanceScores.createdAt)).limit(limit);
+  },
+
+  async getTopicPerformanceScore(topicId: string, period: string) {
+    const rows = await db
+      .select()
+      .from(topicPerformanceScores)
+      .where(and(eq(topicPerformanceScores.topicId, topicId), eq(topicPerformanceScores.period, period)))
+      .limit(1);
+    return rows[0] ?? null;
   },
 };

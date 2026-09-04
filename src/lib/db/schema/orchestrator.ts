@@ -9,7 +9,7 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { weeklyPlanItemStatus, weeklyPlanStatus, workflowType } from "./enums";
+import { contentRole, weeklyPlanItemStatus, weeklyPlanStatus, workflowType } from "./enums";
 import { topics } from "./topics";
 import { workflowRuns } from "./workflows";
 
@@ -97,6 +97,16 @@ export const weeklyPlanItems = pgTable(
     workflowType: workflowType("workflow_type").notNull(),
     priority: varchar("priority", { length: 4 }).notNull().default("P3"),
     topicScore: numeric("topic_score", { precision: 4, scale: 1 }),
+    /* V3：解释性评分（Weekly Planning V2，规格 V3 §24） */
+    contentRole: contentRole("content_role"),
+    baseScore: numeric("base_score", { precision: 4, scale: 1 }),
+    trendAdjustment: numeric("trend_adjustment", { precision: 4, scale: 1 }).notNull().default("0"),
+    performanceAdjustment: numeric("performance_adjustment", { precision: 4, scale: 1 }).notNull().default("0"),
+    conversionAdjustment: numeric("conversion_adjustment", { precision: 4, scale: 1 }).notNull().default("0"),
+    knowledgeGapAdjustment: numeric("knowledge_gap_adjustment", { precision: 4, scale: 1 }).notNull().default("0"),
+    finalScore: numeric("final_score", { precision: 4, scale: 1 }),
+    /** 如 RISING_TREND / HIGH_CONVERSION / KNOWLEDGE_GAP / HIGH_TRAFFIC_LOW_CONVERSION ... */
+    reasonCodes: text("reason_codes").array().default([]),
     status: weeklyPlanItemStatus("status").notNull().default("pending"),
     runId: uuid("run_id").references(() => workflowRuns.id, { onDelete: "set null" }),
     sortOrder: integer("sort_order").notNull().default(0),

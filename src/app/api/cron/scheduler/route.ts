@@ -14,6 +14,8 @@ export async function POST() {
   const summary = await weeklyScheduler.runNow();
   revalidatePath("/dashboard");
   revalidatePath("/planning");
+  revalidatePath("/weekly-plan");
+  revalidatePath("/production");
   revalidatePath("/review");
   return NextResponse.json({ ok: true, ...summary });
 }
@@ -23,6 +25,8 @@ export async function GET() {
   const summary = await weeklyScheduler.runNow();
   revalidatePath("/dashboard");
   revalidatePath("/planning");
+  revalidatePath("/weekly-plan");
+  revalidatePath("/production");
   revalidatePath("/review");
   return NextResponse.json({ ok: true, ...summary });
 }

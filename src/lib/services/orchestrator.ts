@@ -1,14 +1,13 @@
-import {
-  orchestratorRepository,
-  topicRepository,
-  workflowRepository,
-} from "@/lib/repositories";
+import { auditRepository, githubRepository, orchestratorRepository, topicRepository, trendRepository, workflowRepository } from "@/lib/repositories";
 import { topicScoreService, type TopicScoreInput } from "@/lib/services/topic-score";
-import { topicPerformanceService } from "@/lib/services/topic-performance";
-import { auditRepository } from "@/lib/repositories";
+import { topicPerformanceV2Service } from "@/lib/services/topic-performance-v2";
 import type { WorkflowType } from "@/lib/workflows/engine";
 import type { Topic } from "@/lib/db/schema";
 import { startWorkflowRun } from "@/lib/workflows/engine";
+import { db } from "@/lib/db";
+import { contentAssets, knowledgeTopics } from "@/lib/db/schema";
+import { inArray } from "drizzle-orm";
+import { notificationService } from "@/lib/services/notification";
 
 /**
  * Orchestrator Service（V2 P0）：
@@ -69,13 +68,43 @@ export interface PlanItemInput {
   workflowType: OrchestratorWorkflowType;
   priority: string;
   topicScore: string;
+  /* V3：解释性评分明细（规格 V3 §24） */
+  contentRole?: string | null;
+  baseScore?: string | null;
+  trendAdjustment?: string | null;
+  performanceAdjustment?: string | null;
+  conversionAdjustment?: string | null;
+  knowledgeGapAdjustment?: string | null;
+  finalScore?: string | null;
+  reasonCodes?: string[] | null;
+}
+
+const clampScore = (v: number) => Math.max(0, Math.min(10, Math.round(v * 10) / 10));
+
+/** V3：由信号推断 Content Role（cognition 默认，转换高分 → conversion，低转化高流量 → traffic） */
+function pickContentRole(conversionPotential: number, trafficPotential: number, conversionScore: number | null, trafficScore: number | null): string {
+  const conv = conversionScore ?? conversionPotential;
+  const traf = trafficScore ?? trafficPotential;
+  if (conv >= 7) return "conversion";
+  if (conv <= 3 && traf >= 7) return "traffic";
+  if (traf >= 7) return "cognition";
+  return "scenario";
+}
+
+/** V3：优先级由最终分驱动（>=8.5 P0 / >=7 P1 / 其余 P2） */
+function priorityFromScore(finalScore: number, basePriority: string): string {
+  if (finalScore >= 8.5) return "P0";
+  if (finalScore >= 7) return "P1";
+  if (finalScore >= 5.5) return "P2";
+  return basePriority === "P0" || basePriority === "P1" ? "P2" : basePriority;
 }
 
 export const orchestratorService = {
   /**
-   * 生成周计划：扫描候选（ready_for_production + P0/P1 + GitHub selected）
-   * → 五维评分（真实落库 + 审计）→ 历史表现加成（Topic Feedback）
+   * 生成周计划（V3 升级）：扫描候选（ready_for_production + P0/P1 + GitHub selected + 趋势建议）
+   * → 五维基础分 + Trend 加成 + 历史表现反馈 + 转化调整 + 知识缺口调整 → final_score + reason_codes
    * → 路由 + 配额 → 落 weekly_plans / weekly_plan_items（pending，等用户确认）。
+   * 每个 Topic 的评分明细全部落库（V3 §24，不允许只存一个最终数字）。
    */
   async generateWeeklyPlan(weekPrefix: string, quota?: Partial<Record<OrchestratorWorkflowType, number>>) {
     const existing = await orchestratorRepository.getPlan(weekPrefix);
@@ -84,7 +113,7 @@ export const orchestratorService = {
     const q = { ...DEFAULT_QUOTA, ...(quota ?? {}) };
     const used: Record<OrchestratorWorkflowType, number> = { ai_weekly: 0, github_weekly: 0, evergreen: 0, wechat_deep_dive: 0 };
 
-    // 1) 候选池：可生产 Topic（含高优 draft）+ GitHub 最新快照 selected 项
+    // 1) 候选池：可生产 Topic（含高优 draft）+ GitHub 最新快照 selected 项 + 趋势建议 Topic
     const [readyTopics, githubSnap] = await Promise.all([
       topicRepository.listByStatus("ready_for_production"),
       githubRepositoryLatestSelected(),
@@ -96,9 +125,23 @@ export const orchestratorService = {
     const seen = new Set<string>();
     const pool = candidates.filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)));
 
-    // 2) 评分 + 路由 + 反馈
+    // 2) 信号预加载（避免 N+1）：历史表现 / 趋势关联 / 内容与知识覆盖
     const prevWeek = previousWeekOf(weekPrefix);
-    const performances = await topicPerformanceService.listAll(prevWeek);
+    const [performances, trendRows, assetsRows, knowledgeRows] = await Promise.all([
+      topicPerformanceV2Service.listAll(prevWeek),
+      trendRepository.listTrends({ limit: 100 }),
+      pool.length ? db.select().from(contentAssets).where(inArray(contentAssets.topicId, pool.map((t) => t.id))) : Promise.resolve([]),
+      pool.length ? db.select().from(knowledgeTopics).where(inArray(knowledgeTopics.topicId, pool.map((t) => t.id))) : Promise.resolve([]),
+    ]);
+    const perfByTopic = new Map(performances.map((p) => [p.topicId, p]));
+    const trendLinks = await Promise.all(pool.map((t) => trendRepository.listTrendIdsByTopic(t.id)));
+    const trendByTopic = new Map<string, string[]>();
+    pool.forEach((t, i) => trendByTopic.set(t.id, trendLinks[i]));
+    const trendScoreById = new Map<string, number>();
+    for (const tr of trendRows) trendScoreById.set(tr.id, Number(tr.currentScore ?? 0));
+    const assetByTopic = new Map<string, number>();
+    for (const a of assetsRows) assetByTopic.set(a.topicId, (assetByTopic.get(a.topicId) ?? 0) + 1);
+    const knowledgeByTopic = new Set(knowledgeRows.map((k) => k.topicId));
 
     const scored: PlanItemInput[] = [];
     const scanNotes: Record<string, unknown>[] = [];
@@ -111,23 +154,74 @@ export const orchestratorService = {
         contentValue: topic.contentValue ?? 5,
       };
       const scoredResult = await topicScoreService.scoreTopic(topic.id, input, { source: "orchestrator" });
-      const perf = performances.find((p) => p.topicId === topic.id);
-      const feedbackScore = applyTopicFeedback(scoredResult.topicScore, perf ? Number(perf.performanceScore) : null);
+      const base = Number(scoredResult.topicScore);
+      const perf = perfByTopic.get(topic.id);
+      const perfScore = perf ? Number(perf.performanceScore) : null;
+      const convScore = perf ? Number(perf.conversionScore) : null;
+      const trafScore = perf ? Number(perf.trafficScore) : null;
+
+      // Trend 加成：关联趋势平均分（±1.5 收敛）
+      const linkedTrends = (trendByTopic.get(topic.id) ?? []).map((id) => trendScoreById.get(id) ?? 0);
+      const trendScore = linkedTrends.length ? linkedTrends.reduce((a, b) => a + b, 0) / linkedTrends.length : 0;
+      const trendAdjustment = linkedTrends.length ? Math.round((trendScore - 5) * 0.3 * 10) / 10 : 0;
+
+      // 历史表现加成（Topic Feedback，±1）
+      const performanceAdjustment = perfScore == null ? 0 : Math.round((perfScore - 5) * 0.2 * 10) / 10;
+
+      // 转化调整（±0.75）
+      const conversionAdjustment = convScore == null ? 0 : Math.round((convScore - 5) * 0.15 * 10) / 10;
+
+      // 知识缺口调整：无内容资产 + 无知识条目 → +0.5
+      const hasAsset = (assetByTopic.get(topic.id) ?? 0) > 0;
+      const hasKnowledge = knowledgeByTopic.has(topic.id);
+      const knowledgeGapAdjustment = !hasAsset && !hasKnowledge ? 0.5 : 0;
+
+      const finalScore = clampScore(base + trendAdjustment + performanceAdjustment + conversionAdjustment + knowledgeGapAdjustment);
+
+      // reason_codes（每个 code 可解释）
+      const reasonCodes: string[] = [];
+      if (trendScore >= 7) reasonCodes.push("RISING_TREND");
+      if (perfScore != null && perfScore >= 7) reasonCodes.push("HIGH_PERFORMANCE");
+      if (convScore != null && convScore >= 7) reasonCodes.push("HIGH_CONVERSION");
+      if (trafScore != null && convScore != null && trafScore >= 7 && convScore < 4) reasonCodes.push("HIGH_TRAFFIC_LOW_CONVERSION");
+      if (!hasAsset && !hasKnowledge) reasonCodes.push("KNOWLEDGE_GAP");
+      if (perfScore != null && perfScore < 3) reasonCodes.push("LOW_PERFORMANCE");
+      if (reasonCodes.length === 0) reasonCodes.push("STABLE");
+
       const wf = pickWorkflowType(topic);
+      const contentRole = pickContentRole(topic.conversionPotential ?? 5, topic.trafficPotential ?? 5, convScore, trafScore);
+      const priority = priorityFromScore(finalScore, scoredResult.priority);
       scanNotes.push({
         topicId: topic.id,
         title: topic.title.slice(0, 40),
-        base: scoredResult.topicScore,
-        feedback: perf ? Number(perf.performanceScore) : null,
-        final: feedbackScore,
+        base,
+        trend: trendScore ? Math.round(trendScore * 10) / 10 : null,
+        perf: perfScore,
+        conv: convScore,
+        knowledgeGap: knowledgeGapAdjustment,
+        final: finalScore,
         route: wf,
-        priority: scoredResult.priority,
+        role: contentRole,
+        reasonCodes,
       });
-      scored.push({ topicId: topic.id, workflowType: wf, priority: scoredResult.priority, topicScore: String(feedbackScore) });
+      scored.push({
+        topicId: topic.id,
+        workflowType: wf,
+        priority,
+        topicScore: String(finalScore),
+        contentRole,
+        baseScore: String(base),
+        trendAdjustment: String(trendAdjustment),
+        performanceAdjustment: String(performanceAdjustment),
+        conversionAdjustment: String(conversionAdjustment),
+        knowledgeGapAdjustment: String(knowledgeGapAdjustment),
+        finalScore: String(finalScore),
+        reasonCodes,
+      });
     }
 
     // 3) 按分排序 + 配额截断
-    scored.sort((a, b) => Number(b.topicScore) - Number(a.topicScore));
+    scored.sort((a, b) => Number(b.finalScore ?? b.topicScore) - Number(a.finalScore ?? a.topicScore));
     const items: PlanItemInput[] = [];
     for (const s of scored) {
       if (used[s.workflowType] >= q[s.workflowType]) continue;
@@ -145,6 +239,7 @@ export const orchestratorService = {
         scored: scanNotes,
         prevWeek,
         feedbackApplied: performances.length,
+        trendLinked: [...trendByTopic.values()].filter((v) => v.length).length,
       },
     });
     const planItems = await orchestratorRepository.createPlanItems(
@@ -154,6 +249,14 @@ export const orchestratorService = {
         workflowType: it.workflowType,
         priority: it.priority,
         topicScore: it.topicScore,
+        contentRole: it.contentRole as never,
+        baseScore: it.baseScore ?? undefined,
+        trendAdjustment: it.trendAdjustment ?? undefined,
+        performanceAdjustment: it.performanceAdjustment ?? undefined,
+        conversionAdjustment: it.conversionAdjustment ?? undefined,
+        knowledgeGapAdjustment: it.knowledgeGapAdjustment ?? undefined,
+        finalScore: it.finalScore ?? undefined,
+        reasonCodes: it.reasonCodes ?? undefined,
         status: "pending" as const,
         sortOrder: i,
       })),
@@ -167,6 +270,16 @@ export const orchestratorService = {
       after: { weekPrefix, itemCount: items.length, used },
       notes: `Orchestrator 生成本周计划 ${weekPrefix}：${items.length} 项（${JSON.stringify(used)}）`,
       actor: "ai:orchestrator",
+    });
+
+    await notificationService.notify({
+      type: "weekly_plan_ready",
+      title: `本周内容计划已生成（${weekPrefix}）`,
+      message: `${items.length} 个选题待确认：${items.map((i) => i.topicId).slice(0, 4).join("、")}${items.length > 4 ? "…" : ""}`,
+      link: "/weekly-plan",
+      entityType: "weekly_plans",
+      entityId: plan.id,
+      severity: "info",
     });
 
     return { plan, items: planItems };
@@ -307,9 +420,9 @@ export const orchestratorService = {
       }
     }
 
-    // 计划完成检查
+    // 计划完成检查（V3：paused 为终态）
     const all = await orchestratorRepository.getPlanItems(plan.id);
-    if (all.length && all.every((i) => i.status === "completed" || i.status === "failed" || i.status === "skipped" || i.status === "rejected")) {
+    if (all.length && all.every((i) => i.status === "completed" || i.status === "failed" || i.status === "skipped" || i.status === "rejected" || i.status === "paused")) {
       await orchestratorRepository.updatePlan(plan.id, { status: "completed", completedAt: new Date() });
     }
     return { plan, item };
@@ -318,7 +431,6 @@ export const orchestratorService = {
 
 /** GitHub 最新快照的 selected 项 → 按仓库名匹配 Topic（Orchestrator 扫描输入之一） */
 async function githubRepositoryLatestSelected() {
-  const { githubRepository } = await import("@/lib/repositories");
   const snapshots = await githubRepository.listSnapshots();
   if (!snapshots.length) return { items: [] };
   const latest = snapshots[0];

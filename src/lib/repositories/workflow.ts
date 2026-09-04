@@ -64,6 +64,14 @@ export const workflowRepository = {
     return this.updateRun(id, { status, ...extra });
   },
 
+  /** 取消排队中的 run（V3 Error Recovery）：标记 failed + user_cancelled（engine 将 DAG 视作终态） */
+  async cancelQueuedRun(id: string) {
+    const run = await this.getRun(id);
+    if (!run) return null;
+    if (run.status !== "queued" && run.status !== "running") return run;
+    return this.updateRun(id, { status: "failed", error: "用户取消（queued 未开始）", completedAt: new Date() });
+  },
+
   /* ===== Tasks ===== */
   async getRunTasks(runId: string) {
     return db.select().from(workflowTasks).where(eq(workflowTasks.runId, runId)).orderBy(asc(workflowTasks.startedAt));

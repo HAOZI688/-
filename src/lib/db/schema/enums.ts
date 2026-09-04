@@ -306,11 +306,12 @@ export const weeklyPlanStatus = pgEnum("weekly_plan_status", [
   "cancelled",
 ]);
 
-/** 周计划项状态：pending（待用户确认选题）→ approved → running → completed/failed */
+/** 周计划项状态：pending（待用户确认选题）→ approved → running → completed/failed；paused=暂缓（不生产） */
 export const weeklyPlanItemStatus = pgEnum("weekly_plan_item_status", [
   "pending",
   "approved",
   "rejected",
+  "paused",
   "running",
   "completed",
   "failed",

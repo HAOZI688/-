@@ -13,6 +13,7 @@ export const dynamic = "force-dynamic";
 const ITEM_STATUS_LABELS: Record<string, string> = {
   pending: "待确认",
   approved: "已确认",
+  paused: "已暂停",
   rejected: "已拒绝",
   running: "运行中",
   completed: "已完成",
@@ -23,6 +24,7 @@ const ITEM_STATUS_LABELS: Record<string, string> = {
 const ITEM_STATUS_TONES: Record<string, "default" | "blue" | "green" | "red" | "orange"> = {
   pending: "orange",
   approved: "blue",
+  paused: "default",
   rejected: "default",
   running: "blue",
   completed: "green",

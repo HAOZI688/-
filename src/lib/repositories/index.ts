@@ -1,5 +1,5 @@
 /**
- * Repository 层（规格 §80）：11 个 domain repository。
+ * Repository 层（规格 §80）：domain repository。
  * 页面与 action 只依赖本层，禁止直接拼 SQL。
  */
 export * from "./topic";
@@ -15,3 +15,6 @@ export * from "./metrics";
 export * from "./lead";
 export * from "./audit";
 export * from "./orchestrator";
+export * from "./trend";
+export * from "./attribution";
+export * from "./notification";

@@ -20,6 +20,10 @@ import {
   Users,
   Database,
   Upload,
+  Bell,
+  Radar,
+  Factory,
+  ClipboardList,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { CommandMenu } from "@/components/ui/command-menu";
@@ -29,9 +33,10 @@ const NAV_GROUPS = [
   {
     label: "总览",
     items: [
-      { href: "/dashboard", label: "运营总览", icon: LayoutDashboard },
-      { href: "/planning", label: "本周计划", icon: CalendarDays },
+      { href: "/dashboard", label: "运营工作台", icon: LayoutDashboard },
+      { href: "/weekly-plan", label: "本周内容计划", icon: ClipboardList },
       { href: "/review", label: "待审核", icon: FileText },
+      { href: "/notifications", label: "通知中心", icon: Bell },
       { href: "/topics", label: "Topic 中心", icon: Lightbulb },
       { href: "/topic-graph", label: "Topic 关系图谱", icon: Network },
     ],
@@ -39,6 +44,8 @@ const NAV_GROUPS = [
   {
     label: "生产",
     items: [
+      { href: "/production", label: "生产监控台", icon: Factory },
+      { href: "/trend-radar", label: "趋势雷达", icon: Radar },
       { href: "/workflows", label: "工作流", icon: Workflow },
       { href: "/workflows/runs", label: "执行记录", icon: Newspaper },
       { href: "/sources", label: "来源与核验", icon: FileText },
@@ -54,12 +61,14 @@ const NAV_GROUPS = [
       { href: "/calendar", label: "内容日历", icon: CalendarDays },
       { href: "/accounts", label: "社交账号", icon: Users },
       { href: "/analytics", label: "数据分析", icon: BarChart3 },
+      { href: "/analytics/attribution", label: "涨粉归因", icon: BarChart3 },
     ],
   },
   {
     label: "数据集成",
     items: [
       { href: "/connectors/xiaodouya", label: "小豆芽", icon: Database },
+      { href: "/connectors/xiaodouya/mappings", label: "映射模板", icon: Database },
       { href: "/data-import", label: "数据导入", icon: Upload },
     ],
   },

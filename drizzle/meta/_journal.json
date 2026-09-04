@@ -29,6 +29,13 @@
       "when": 1788484095298,
       "tag": "0003_v2_orchestrator",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788496623588,
+      "tag": "0004_v3_workbench",
+      "breakpoints": true
     }
   ]
 }

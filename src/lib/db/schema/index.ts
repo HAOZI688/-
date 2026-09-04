@@ -18,3 +18,6 @@ export * from "./audit";
 export * from "./scoring";
 export * from "./trend";
 export * from "./orchestrator";
+export * from "./v3-trends";
+export * from "./v3-attribution";
+export * from "./v3-ops";

@@ -21,7 +21,7 @@
  * 运行：pnpm db:seed
  */
 import { db } from "./index";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { topicScoreService } from "../services/topic-score";
 import { auditRepository } from "../repositories";
 
@@ -39,13 +39,16 @@ async function reset() {
       github_snapshot_items, github_snapshots,
       knowledge_relations, knowledge_topics,
       topic_relations, topic_tags, tags,
-      topic_performances, leads, conversion_events,
+      topic_performances, topic_performance_scores, leads, conversion_events,
       post_metric_snapshots, account_metric_snapshots, metric_mappings, metric_definitions,
       external_posts, connector_accounts, data_sync_jobs, data_import_batches, data_connectors,
       content_versions, content_assets, content_metrics, brand_assets, visual_templates,
       publications, social_accounts,
       source_packet_items, source_packets, sources,
       topics, topic_scoring_config, trend_radar_items,
+      trend_snapshots, trend_sources, trend_topics, trend_scoring_config, trends,
+      attribution_results, attribution_runs, account_growth_baselines,
+      notifications, import_mapping_templates,
       workspaces, users
     CASCADE
   `);
@@ -755,7 +758,7 @@ export async function seed() {
     matchStatus: "suggested", matchConfidence: "medium",
     rawData: { aweme_id: "741000" },
   }).returning();
-  await db.insert(schema.externalPosts).values({
+  const [ep4] = await db.insert(schema.externalPosts).values({
     connectorId: conn.id, socialAccountId: accDouyin.id,
     externalPostId: "douyin_10001_0004", platform: "douyin",
     title: "MCP 一文读懂：Agent 工具标准",
@@ -763,7 +766,7 @@ export async function seed() {
     externalUrl: "https://www.douyin.com/video/740888",
     matchStatus: "unmatched", matchConfidence: null,
     rawData: { aweme_id: "740888" },
-  });
+  }).returning();
 
   // 快照（规格 §40：T+1/3/7，禁止只存最终值）
   const t0 = new Date("2026-09-03T12:00:00Z");
@@ -882,7 +885,172 @@ export async function seed() {
     active: 1,
   });
 
-  console.log("✅ Seed 完成（43+ 表全部覆盖）");
+  /* ================= V3 Seed（规格 V3：Trend Radar / Attribution / Ops / 映射模板） ================= */
+
+  // ---- V3 Trend Radar（规格 V3 §10-§16）：3 条趋势（rising / stable / declining） ----
+  console.log("📡 Trend Radar（3 条趋势 + 来源 + 快照 + 评分配置）…");
+  await db.insert(schema.trendScoringConfig).values({
+    name: "default",
+    recurrenceWeight: 15, velocityWeight: 15, sourceDiversityWeight: 10,
+    technicalSignificanceWeight: 15, b2bWeight: 15,
+    contentPerformanceWeight: 10, conversionWeight: 10, knowledgeGapWeight: 10,
+    techKeywords: JSON.stringify(["agent", "ai", "llm", "model", "mcp", "rpa", "automation"]),
+    active: 1,
+  });
+
+  const trendTs = (n: number) => new Date(t0.getTime() + n * 86400000);
+  const [trendRising] = await db.insert(schema.trends).values({
+    trendKey: "agent-skills", title: "Agent Skills：让 AI Agent 掌握领域技能",
+    description: "多家厂商同步推出 Agent Skills / 技能商店，AI Weekly 与 GitHub 周榜连续两周高密度提及，属于上行趋势。",
+    category: "ai-agent", status: "rising",
+    firstSeenAt: trendTs(-10), lastSeenAt: trendTs(1),
+    currentScore: "8.7", velocityScore: "4.2", b2bRelevance: 9, sourceDiversity: "7.5",
+    coverageStatus: "covered",
+    scoreBreakdown: { recurrence: 9, velocity: 8.5, source_diversity: 7.5, technical_significance: 9.5, b2b: 9, content_perf: 8, conversion: 7.5, knowledge_gap: 8 },
+    configVersion: "1.0",
+  }).returning();
+  const [trendStable] = await db.insert(schema.trends).values({
+    trendKey: "mcp-protocols", title: "MCP 协议：Agent 工具生态标准",
+    description: "MCP 已进入稳定采用期，事件频次不再增长但覆盖话题稳定，属于平稳趋势。",
+    category: "ai-agent", status: "stable",
+    firstSeenAt: trendTs(-20), lastSeenAt: trendTs(1),
+    currentScore: "6.4", velocityScore: "0.3", b2bRelevance: 8, sourceDiversity: "6.0",
+    coverageStatus: "covered",
+    scoreBreakdown: { recurrence: 6.5, velocity: 5, source_diversity: 6, technical_significance: 8, b2b: 7.5, content_perf: 6, conversion: 5.5, knowledge_gap: 4 },
+    configVersion: "1.0",
+  }).returning();
+  const [trendDeclining] = await db.insert(schema.trends).values({
+    trendKey: "lowcode-platform", title: "低代码平台：热度持续下行",
+    description: "低代码事件频次连续 3 周下降，AI Weekly 提及减少，属于下行趋势，暂不投入生产。",
+    category: "development-tools", status: "declining",
+    firstSeenAt: trendTs(-30), lastSeenAt: trendTs(-2),
+    currentScore: "4.2", velocityScore: "-2.1", b2bRelevance: 5, sourceDiversity: "3.0",
+    coverageStatus: "uncovered",
+    scoreBreakdown: { recurrence: 3, velocity: 3, source_diversity: 3, technical_significance: 5, b2b: 5, content_perf: 4, conversion: 4, knowledge_gap: 6 },
+    configVersion: "1.0",
+  }).returning();
+
+  await db.insert(schema.trendSources).values([
+    { trendId: trendRising.id, sourceType: "ai_weekly", sourceTopicId: t6.id, workflowRunId: runAw.id, weight: "0.8", evidence: "Agent Skills：让 AI Agent 掌握领域技能（AI Weekly 2026W36）", seenAt: trendTs(-6) },
+    { trendId: trendRising.id, sourceType: "github_weekly", sourceTopicId: t6.id, workflowRunId: runGw.id, weight: "0.6", evidence: "GitHub 周榜 AI 项目盘点 2026W36 连续两周上榜", seenAt: trendTs(-3) },
+    { trendId: trendRising.id, sourceType: "knowledge", sourceTopicId: t6.id, weight: "0.4", evidence: "知识库新增 Agent Skills 技能规范条目", seenAt: trendTs(-1) },
+    { trendId: trendStable.id, sourceType: "ai_weekly", sourceTopicId: t7.id, workflowRunId: runAw.id, weight: "0.6", evidence: "Plugins 与 MCP：Agent 的工具生态协议（AI Weekly 2026W36）", seenAt: trendTs(-5) },
+    { trendId: trendStable.id, sourceType: "github_weekly", sourceTopicId: t7.id, workflowRunId: runGw.id, weight: "0.5", evidence: "MCP SDK 仓库保持稳定 star 增长", seenAt: trendTs(-2) },
+    { trendId: trendStable.id, sourceType: "knowledge", sourceTopicId: t7.id, weight: "0.3", evidence: "知识库 MCP 协议条目已建", seenAt: trendTs(-1) },
+    { trendId: trendStable.id, sourceType: "manual", weight: "0.2", evidence: "人工观察：客户咨询中 MCP 需求占比稳定", seenAt: trendTs(0) },
+    { trendId: trendDeclining.id, sourceType: "ai_weekly", workflowRunId: runAw.id, weight: "0.5", evidence: "低代码平台提及连续 3 周下降（AI Weekly）", seenAt: trendTs(-4) },
+    { trendId: trendDeclining.id, sourceType: "knowledge", sourceTopicId: t8.id, weight: "0.3", evidence: "知识库低代码相关条目近 30 天无更新", seenAt: trendTs(-2) },
+  ]);
+
+  await db.insert(schema.trendTopics).values([
+    { trendId: trendRising.id, topicId: t6.id, relation: "covered" },
+    { trendId: trendRising.id, topicId: t3.id, relation: "suggested" },
+    { trendId: trendStable.id, topicId: t7.id, relation: "covered" },
+    { trendId: trendDeclining.id, topicId: t8.id, relation: "derived" },
+  ]);
+
+  await db.insert(schema.trendSnapshots).values([
+    { trendId: trendRising.id, snapshotDate: trendTs(-8), currentScore: "5.2", velocityScore: "2.1", sourceCount: 2, coveredTopicCount: 0, signals: { recurrence: 6, velocity: 5 } },
+    { trendId: trendRising.id, snapshotDate: trendTs(-4), currentScore: "6.8", velocityScore: "3.4", sourceCount: 3, coveredTopicCount: 1, signals: { recurrence: 8, velocity: 7.5 } },
+    { trendId: trendRising.id, snapshotDate: trendTs(1), currentScore: "8.7", velocityScore: "4.2", sourceCount: 4, coveredTopicCount: 1, signals: { recurrence: 9, velocity: 8.5 } },
+    { trendId: trendStable.id, snapshotDate: trendTs(-8), currentScore: "6.3", velocityScore: "0.2", sourceCount: 3, coveredTopicCount: 1, signals: { recurrence: 6.5, velocity: 5 } },
+    { trendId: trendStable.id, snapshotDate: trendTs(-4), currentScore: "6.5", velocityScore: "0.4", sourceCount: 4, coveredTopicCount: 1, signals: { recurrence: 6.5, velocity: 5.5 } },
+    { trendId: trendStable.id, snapshotDate: trendTs(1), currentScore: "6.4", velocityScore: "0.3", sourceCount: 4, coveredTopicCount: 1, signals: { recurrence: 6.5, velocity: 5 } },
+    { trendId: trendDeclining.id, snapshotDate: trendTs(-10), currentScore: "5.6", velocityScore: "-0.8", sourceCount: 3, coveredTopicCount: 0, signals: { recurrence: 4, velocity: 4 } },
+    { trendId: trendDeclining.id, snapshotDate: trendTs(-6), currentScore: "5.0", velocityScore: "-1.5", sourceCount: 2, coveredTopicCount: 0, signals: { recurrence: 3.5, velocity: 3 } },
+    { trendId: trendDeclining.id, snapshotDate: trendTs(-2), currentScore: "4.2", velocityScore: "-2.1", sourceCount: 2, coveredTopicCount: 0, signals: { recurrence: 3, velocity: 3 } },
+  ]);
+
+  // ---- V3 Follower Attribution（规格 V3 §17-§20）：2 个账号增长场景 ----
+  console.log("📈 Follower Attribution（抖音高置信 + 小红书自然增长）…");
+  // 场景 A：抖音发布后明显涨粉（发布日前后增量 >> 基线）
+  await db.insert(schema.accountGrowthBaselines).values({
+    socialAccountId: accDouyin.id,
+    periodStart: trendTs(-28), periodEnd: trendTs(-1),
+    avgDailyGrowth: "25.6", medianDailyGrowth: "22.0", stdDev: "8.2", anomalyDays: 2, sampleDays: 26,
+  });
+  // 场景 B：小红书自然增长（无单内容显著贡献）
+  await db.insert(schema.accountGrowthBaselines).values({
+    socialAccountId: accXhs.id,
+    periodStart: trendTs(-28), periodEnd: trendTs(-1),
+    avgDailyGrowth: "8.4", medianDailyGrowth: "8.0", stdDev: "1.2", anomalyDays: 0, sampleDays: 28,
+  });
+
+  const [attrRunDouyin] = await db.insert(schema.attributionRuns).values({
+    socialAccountId: accDouyin.id, periodStart: trendTs(-7), periodEnd: trendTs(0),
+    modelVersion: "v1", configVersion: "1.0", status: "completed",
+    observedGrowth: 470, expectedGrowth: 180, incrementalGrowth: 290, unattributed: 40,
+    completedAt: trendTs(0),
+  }).returning();
+  const [attrRunXhs] = await db.insert(schema.attributionRuns).values({
+    socialAccountId: accXhs.id, periodStart: trendTs(-7), periodEnd: trendTs(0),
+    modelVersion: "v1", configVersion: "1.0", status: "completed",
+    observedGrowth: 90, expectedGrowth: 88, incrementalGrowth: 2, unattributed: 0,
+    completedAt: trendTs(0),
+  }).returning();
+
+  await db.insert(schema.attributionResults).values([
+    // 场景 A：高置信（score >= 0.6）
+    { runId: attrRunDouyin.id, publicationId: null, externalPostId: ep3.id, topicId: t3.id, attributedFollowers: "190.0", attributionScore: "0.820", attributionType: "high_confidence",
+      evidence: { viewPercentile: 0.93, engagementRate: 0.041, profileVisits: 320, recencyPercentile: 0.9, windowDays: 7, concurrentPosts: 3, note: "播放分位 93%、主页访问激增，符合高置信判定" } },
+    // 场景 A：低置信（score 0.35-0.6 → probable）；未匹配外部作品 ep4 兜底（外链指向小豆芽但无内容匹配）
+    { runId: attrRunDouyin.id, publicationId: null, externalPostId: ep4.id, topicId: null, attributedFollowers: "35.0", attributionScore: "0.450", attributionType: "probable",
+      evidence: { viewPercentile: 0.4, engagementRate: 0.015, profileVisits: 0, recencyPercentile: 0.2, windowDays: 7, concurrentPosts: 3, note: "未匹配外部作品，外链直达主页但无内容对应，低置信" } },
+    // 场景 B：自然增长 → probable / assisted
+    { runId: attrRunXhs.id, publicationId: pub4.id, externalPostId: ep1.id, topicId: t5.id, attributedFollowers: "1.0", attributionScore: "0.350", attributionType: "probable",
+      evidence: { viewPercentile: 0.5, engagementRate: 0.024, profileVisits: 0, recencyPercentile: 0.3, windowDays: 7, concurrentPosts: 2, note: "增长低于基线 1σ，仅微小贡献" } },
+    { runId: attrRunXhs.id, publicationId: pub3.id, externalPostId: ep2.id, topicId: t1.id, attributedFollowers: "0.5", attributionScore: "0.200", attributionType: "assisted",
+      evidence: { viewPercentile: 0.3, engagementRate: 0.011, profileVisits: 0, recencyPercentile: 0.1, windowDays: 7, concurrentPosts: 2, note: "增长主要由自然基线解释，内容几乎无贡献" } },
+  ]);
+
+  // ---- V3 Import Mapping Templates（规格 V3 §7）----
+  console.log("🗂️ Import Mapping Templates（小豆芽 CSV 列映射模板）…");
+  await db.insert(schema.importMappingTemplates).values([
+    {
+      connectorType: "xiaodouya", dataType: "post", name: "小豆芽作品导出 v2.1", version: "2.1",
+      columnMapping: { "作品ID": "external_post_id", "作品标题": "title", "发布时间": "published_at", "播放量": "views", "点赞数": "likes", "评论数": "comments", "分享数": "shares", "作品链接": "external_url" },
+      requiredColumns: JSON.stringify(["作品ID", "作品标题", "作品链接"]), active: 1,
+    },
+    {
+      connectorType: "xiaodouya", dataType: "account", name: "小豆芽账号导出 v1.0", version: "1.0",
+      columnMapping: { "账号ID": "external_account_id", "账号名": "account_name", "粉丝数": "followers", "新增粉丝": "new_followers", "主页访问": "profile_visits" },
+      requiredColumns: JSON.stringify(["账号ID", "账号名"]), active: 1,
+    },
+  ]);
+
+  // ---- V3 Stale Metric（规格 V3 §26）：微信账号快照停留在 12 天前 → metrics_stale ----
+  await db.insert(schema.accountMetricSnapshots).values({
+    socialAccountId: accWechat.id,
+    capturedAt: new Date(Date.now() - 12 * 86400000),
+    followers: 12800, newFollowers: 0, profileVisits: 0, impressions: 0, views: 0, engagements: 0,
+    rawMetrics: { source: "xiaodouya_csv", note: "历史快照，超过 7 天未更新（stale）" },
+  });
+
+  // ---- V3 Notifications（规格 V3 §27）----
+  console.log("🔔 Notifications（5 条未读）…");
+  await db.insert(schema.notifications).values([
+    { type: "content_needs_review", severity: "info", title: "3 条内容待审核", message: "AI 周报/治理文章/周榜卡片已产出，等待人工审核", link: "/review", entityType: "content_assets", read: 0 },
+    { type: "metrics_stale", severity: "warning", title: "公众号指标超过 7 天未同步", message: "AI工场公众号最后快照 12 天前，请重新导入小豆芽数据", link: "/connectors/xiaodouya", entityType: "social_accounts", read: 0 },
+    { type: "unmatched_external_post", severity: "warning", title: "1 条外部作品未匹配", message: "douyin_10001_0004（MCP 一文读懂）未匹配到任何内容资产", link: "/connectors/xiaodouya", entityType: "external_posts", entityId: "douyin_10001_0004", read: 0 },
+    { type: "trend_p0_detected", severity: "info", title: "P0 趋势：Agent Skills 快速上升", message: "综合评分 8.7、velocity +4.2，建议尽快规划内容", link: "/trend-radar/" + trendRising.id, entityType: "trends", entityId: trendRising.trendKey, read: 0 },
+    { type: "attribution_completed", severity: "info", title: "抖音涨粉归因完成", message: "观测 +470 / 基线 +180 / 增量 +290（含 2 条内容归因）", link: "/analytics/attribution", entityType: "attribution_runs", entityId: attrRunDouyin.id, read: 0 },
+  ]);
+
+  // ---- V3 Topic Performance V2（上一自然周 2026W35，dashboard Performance Feedback 数据源）----
+  console.log("🏆 Topic Performance V2（2026W35 反馈闭环，回写 V1）…");
+  await db.insert(schema.topicPerformanceScores).values([
+    { topicId: t4.id, period: "2026W35", trafficScore: "5.5", engagementScore: "7.8", followerScore: "6.2", leadScore: "8.0", conversionScore: "8.5", trendScore: "6.5", performanceScore: "7.1", recommendation: "Increase Investment", reasonCodes: ["HIGH_CONVERSION"], metrics: { views: 0, leads: 3, demos: 2, note: "纯线索主题" }, configVersion: "v2.1" },
+    { topicId: t6.id, period: "2026W35", trafficScore: "8.8", engagementScore: "8.2", followerScore: "7.5", leadScore: "6.0", conversionScore: "5.0", trendScore: "9.0", performanceScore: "7.8", recommendation: "Increase Investment", reasonCodes: ["RISING_TREND"], metrics: { views: 47000, likes: 2100, note: "趋势上行" }, configVersion: "v2.1" },
+    { topicId: t5.id, period: "2026W35", trafficScore: "9.2", engagementScore: "7.0", followerScore: "6.8", leadScore: "3.0", conversionScore: "2.5", trendScore: "5.5", performanceScore: "5.8", recommendation: "Traffic Only", reasonCodes: ["HIGH_TRAFFIC_LOW_CONVERSION"], metrics: { views: 78000, demos: 0, leads: 0, note: "高流量低转化" }, configVersion: "v2.1" },
+    { topicId: t3.id, period: "2026W35", trafficScore: "7.0", engagementScore: "6.5", followerScore: "9.0", leadScore: "5.0", conversionScore: "5.0", trendScore: "7.0", performanceScore: "6.7", recommendation: "Continue", reasonCodes: ["HIGH_FOLLOWER_IMPACT", "KNOWLEDGE_GAP"], metrics: { views: 31000, newFollowers: 260, note: "涨粉主力但知识缺口未补" }, configVersion: "v2.1" },
+    { topicId: t7.id, period: "2026W35", trafficScore: "6.5", engagementScore: "6.0", followerScore: "5.0", leadScore: "5.0", conversionScore: "5.0", trendScore: "6.0", performanceScore: "5.7", recommendation: "Saturated", reasonCodes: ["CONTENT_SATURATION"], metrics: { views: 22000, note: "MCP 内容已饱和" }, configVersion: "v2.1" },
+    { topicId: t8.id, period: "2026W35", trafficScore: "3.5", engagementScore: "3.0", followerScore: "2.5", leadScore: "2.0", conversionScore: "2.0", trendScore: "4.0", performanceScore: "2.9", recommendation: "Pause", reasonCodes: ["LOW_PERFORMANCE"], metrics: { views: 4000, note: "历史低表现" }, configVersion: "v2.1" },
+  ]);
+  // 兼容回写 V1（V3 明细为准，V1 performanceScore 同步最新值）
+  await db.update(schema.topicPerformances)
+    .set({ performanceScore: "7.8" }).where(eq(schema.topicPerformances.topicId, t6.id));
+
+  console.log("✅ Seed 完成（58 表全部覆盖，含 V3）");
 }
 
 // 延迟 import schema（TRUNCATE 之后按需引用，避免循环）

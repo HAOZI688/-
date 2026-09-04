@@ -181,3 +181,108 @@ export const DEDUPE_LABELS: Record<string, string> = {
   related: "相关",
   confirmed_new: "确认新题",
 };
+
+/* ===== V3（Production Workbench） ===== */
+
+/** 计划项状态（V2 冻结值 + V3 paused） */
+export const ITEM_STATUS_LABELS: Record<string, string> = {
+  pending: "待确认",
+  approved: "已通过",
+  paused: "已暂停",
+  rejected: "已拒绝",
+  running: "生产中",
+  completed: "已完成",
+  failed: "失败",
+  skipped: "跳过",
+};
+
+export const ITEM_STATUS_TONES: Record<string, BadgeVariant> = {
+  pending: "orange",
+  approved: "blue",
+  paused: "default",
+  rejected: "red",
+  running: "blue",
+  completed: "green",
+  failed: "red",
+  skipped: "default",
+};
+
+/** Weekly Plan V2 评分 reason_codes（可解释来源，V3 §23） */
+export const REASON_CODE_LABELS: Record<string, string> = {
+  RISING_TREND: "趋势上升",
+  HIGH_PERFORMANCE: "历史高表现",
+  HIGH_CONVERSION: "高转化",
+  HIGH_TRAFFIC_LOW_CONVERSION: "高流量低转化",
+  KNOWLEDGE_GAP: "知识缺口",
+  LOW_PERFORMANCE: "历史低表现",
+  STABLE: "表现稳定",
+  HIGH_FOLLOWER_IMPACT: "高涨粉影响",
+  CONTENT_SATURATION: "内容饱和",
+};
+
+/** 通知类型（V3 §27 九种） */
+export const NOTIFICATION_TYPE_LABELS: Record<string, string> = {
+  weekly_plan_ready: "周计划已生成",
+  workflow_failed: "工作流失败",
+  content_needs_review: "内容待审核",
+  publication_needs_confirmation: "发布待确认",
+  data_sync_failed: "数据同步失败",
+  unmatched_external_post: "作品未匹配",
+  metrics_stale: "数据过期",
+  trend_p0_detected: "P0 趋势",
+  attribution_completed: "归因完成",
+};
+
+/** 趋势状态 / 覆盖状态（Trend Radar，V3 §13） */
+export const TREND_STATUS_LABELS: Record<string, string> = {
+  emerging: "新兴",
+  rising: "上升",
+  stable: "平稳",
+  declining: "衰退",
+  archived: "已归档",
+};
+
+export const TREND_STATUS_TONES: Record<string, BadgeVariant> = {
+  emerging: "blue",
+  rising: "green",
+  stable: "default",
+  declining: "orange",
+  archived: "default",
+};
+
+export const COVERAGE_STATUS_LABELS: Record<string, string> = {
+  uncovered: "未覆盖",
+  partial: "部分覆盖",
+  covered: "已覆盖",
+  saturated: "饱和",
+};
+
+/** 涨粉归因类型（V3 §35） */
+export const ATTRIBUTION_TYPE_LABELS: Record<string, string> = {
+  direct: "直接归因",
+  high_confidence: "高置信",
+  probable: "可能归因",
+  assisted: "辅助归因",
+  unattributed: "未归因",
+};
+
+export const ATTRIBUTION_TYPE_TONES: Record<string, BadgeVariant> = {
+  direct: "green",
+  high_confidence: "blue",
+  probable: "default",
+  assisted: "default",
+  unattributed: "default",
+};
+
+/** 数据新鲜度（Metric Freshness，V3 §48） */
+export const FRESHNESS_LABELS: Record<string, string> = {
+  fresh: "新鲜",
+  aging: "老化",
+  stale: "过期",
+};
+
+export const FRESHNESS_TONES: Record<string, BadgeVariant> = {
+  fresh: "green",
+  aging: "orange",
+  stale: "red",
+};

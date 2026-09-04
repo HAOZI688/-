@@ -6,6 +6,7 @@ import {
   dataImportBatches,
   dataSyncJobs,
   externalPosts,
+  importMappingTemplates,
   publications,
 } from "@/lib/db/schema";
 
@@ -88,6 +89,22 @@ export const connectorRepository = {
     return rows;
   },
 
+  /** 待匹配作品（unmatched + suggested），小豆芽工作台展示 + 手动匹配 */
+  async listUnmatchedPosts(connectorId?: string, limit = 200) {
+    return db
+      .select({ post: externalPosts, publication: publications })
+      .from(externalPosts)
+      .leftJoin(publications, eq(externalPosts.publicationId, publications.id))
+      .where(
+        and(
+          connectorId ? eq(externalPosts.connectorId, connectorId) : undefined,
+          or(eq(externalPosts.matchStatus, "unmatched"), eq(externalPosts.matchStatus, "suggested")),
+        ),
+      )
+      .orderBy(desc(externalPosts.publishedAt))
+      .limit(limit);
+  },
+
   async getExternalPost(id: string) {
     const rows = await db.select().from(externalPosts).where(eq(externalPosts.id, id)).limit(1);
     return rows[0] ?? null;
@@ -165,5 +182,33 @@ export const connectorRepository = {
 
   async listSyncJobs(limit = 50) {
     return db.select().from(dataSyncJobs).orderBy(desc(dataSyncJobs.createdAt)).limit(limit);
+  },
+
+  /* ===== Import Mapping Templates（V3：不同导出版本字段映射复用） ===== */
+  async listMappingTemplates(opts?: { dataType?: string; activeOnly?: boolean }) {
+    return db
+      .select()
+      .from(importMappingTemplates)
+      .where(and(opts?.dataType ? eq(importMappingTemplates.dataType, opts.dataType) : undefined, opts?.activeOnly ? eq(importMappingTemplates.active, 1) : undefined))
+      .orderBy(desc(importMappingTemplates.createdAt));
+  },
+
+  async getMappingTemplate(id: string) {
+    const rows = await db.select().from(importMappingTemplates).where(eq(importMappingTemplates.id, id)).limit(1);
+    return rows[0] ?? null;
+  },
+
+  async createMappingTemplate(input: typeof importMappingTemplates.$inferInsert) {
+    const rows = await db.insert(importMappingTemplates).values(input).returning();
+    return rows[0];
+  },
+
+  async updateMappingTemplate(id: string, patch: Partial<Omit<typeof importMappingTemplates.$inferSelect, "id" | "createdAt">>) {
+    const rows = await db
+      .update(importMappingTemplates)
+      .set({ ...patch, updatedAt: new Date() })
+      .where(eq(importMappingTemplates.id, id))
+      .returning();
+    return rows[0] ?? null;
   },
 };
