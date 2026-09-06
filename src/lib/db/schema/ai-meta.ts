@@ -78,6 +78,12 @@ export const aiUsageLogs = pgTable(
     promptVersion: varchar("prompt_version", { length: 20 }),
     inputTokens: integer("input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
+    /** B-3：total = input + output（冗余列，规格 §8 留痕要求） */
+    totalTokens: integer("total_tokens").notNull().default(0),
+    /** B-3：本次调用是否发生在 Fallback Provider 上（primary 失败后切换） */
+    fallbackUsed: boolean("fallback_used").notNull().default(false),
+    /** B-3：cost/token 是否为估算值（Provider 未返回 usage 时标记，禁止伪造精确值） */
+    estimated: boolean("estimated").notNull().default(true),
     cost: numeric("cost"),
     latency: integer("latency"), // ms
     createdAt: timestamp("created_at", { withTimezone: true })

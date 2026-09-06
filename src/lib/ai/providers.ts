@@ -80,27 +80,105 @@ export function detectProvider(): ProviderName | null {
   return null;
 }
 
-/** 已配置的 Provider 链（按 fallback 优先级排序） */
+/** 已配置的 Provider 链（按 fallback 优先级排序）。
+ * B-3：支持显式配置 AI_PRIMARY_PROVIDER / AI_FALLBACK_PROVIDER（值 = anthropic|openai|deepseek|content_api），
+ * 未配置时按内置默认序（anthropic → content_api → openai → deepseek）取全部已配置者。 */
 export function configuredProviders(): ProviderName[] {
   const order: ProviderName[] = ["anthropic", "content_api", "openai", "deepseek"];
-  return order.filter((p) => {
-    switch (p) {
-      case "anthropic":
-        return Boolean(process.env.ANTHROPIC_API_KEY);
-      case "content_api":
-        return Boolean(process.env.CONTENT_API_BASE_URL && process.env.CONTENT_API_KEY);
-      case "openai":
-        return Boolean(process.env.OPENAI_API_KEY);
-      case "deepseek":
-        return Boolean(process.env.DEEPSEEK_API_KEY);
-      default:
-        return false;
-    }
-  });
+  const available = order.filter((p) => providerConfigured(p));
+
+  const primary = (process.env.AI_PRIMARY_PROVIDER ?? "").trim() as ProviderName;
+  const fallback = (process.env.AI_FALLBACK_PROVIDER ?? "").trim() as ProviderName;
+  const chain: ProviderName[] = [];
+  if (primary && available.includes(primary)) chain.push(primary);
+  if (fallback && available.includes(fallback) && !chain.includes(fallback)) chain.push(fallback);
+  for (const p of available) {
+    if (!chain.includes(p)) chain.push(p);
+  }
+  return chain;
 }
 
-/** 单 Provider 单次调用（带超时） */
-async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: { temperature?: number; maxTokens?: number }, timeoutMs: number): Promise<ChatResult> {
+function providerConfigured(p: ProviderName): boolean {
+  switch (p) {
+    case "anthropic":
+      return Boolean(process.env.ANTHROPIC_API_KEY);
+    case "content_api":
+      return Boolean(process.env.CONTENT_API_BASE_URL && process.env.CONTENT_API_KEY);
+    case "openai":
+      return Boolean(process.env.OPENAI_API_KEY);
+    case "deepseek":
+      return Boolean(process.env.DEEPSEEK_API_KEY);
+    default:
+      return false;
+  }
+}
+
+/** B-3：显式模型配置。AI_PRIMARY_MODEL 覆盖主 Provider 模型，AI_FALLBACK_MODEL 覆盖备用；回落到各 Provider 自身 env / 默认值。 */
+function modelFor(provider: ProviderName, isFallbackTier: boolean): string {
+  if (isFallbackTier && process.env.AI_FALLBACK_MODEL) return process.env.AI_FALLBACK_MODEL;
+  if (!isFallbackTier && process.env.AI_PRIMARY_MODEL) return process.env.AI_PRIMARY_MODEL;
+  switch (provider) {
+    case "anthropic":
+      return process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5";
+    case "openai":
+      return process.env.OPENAI_MODEL ?? "gpt-4o";
+    case "deepseek":
+      return process.env.DEEPSEEK_MODEL ?? "deepseek-chat";
+    case "content_api":
+      return process.env.CONTENT_MODEL ?? "gpt-4o-mini";
+  }
+}
+
+/** B-3 §4：Provider 真实健康检查（实际发一条最小 completion，不信任"环境变量存在"）。
+ * 结果带 5 分钟缓存，readiness 页多次加载不重复请求。 */
+export interface ProviderHealth {
+  provider: ProviderName;
+  configured: boolean;
+  reachable: boolean;
+  latencyMs: number | null;
+  model: string | null;
+  errorType: string | null;
+  checkedAt: string;
+}
+
+const healthCache = new Map<ProviderName, { at: number; result: ProviderHealth }>();
+const HEALTH_TTL_MS = 5 * 60 * 1000;
+
+export async function checkProviderHealth(provider: ProviderName, force = false): Promise<ProviderHealth> {
+  const cached = healthCache.get(provider);
+  if (!force && cached && Date.now() - cached.at < HEALTH_TTL_MS) return cached.result;
+
+  const base: ProviderHealth = {
+    provider,
+    configured: providerConfigured(provider),
+    reachable: false,
+    latencyMs: null,
+    model: null,
+    errorType: null,
+    checkedAt: new Date().toISOString(),
+  };
+  if (!base.configured) {
+    healthCache.set(provider, { at: Date.now(), result: base });
+    return base;
+  }
+  const started = Date.now();
+  try {
+    const res = await chatOnce(provider, [{ role: "user", content: "ping，请回复 ok" }], { maxTokens: 8, temperature: 0, model: modelFor(provider, false) }, 15_000);
+    base.reachable = res.text.trim().length > 0;
+    base.latencyMs = Date.now() - started;
+    base.model = res.model;
+    if (!base.reachable) base.errorType = "EMPTY_COMPLETION";
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    base.errorType = /abort|timeout/i.test(msg) ? "TIMEOUT" : /401|403/i.test(msg) ? "AUTH" : /429/i.test(msg) ? "RATE_LIMIT" : "REQUEST_ERROR";
+    base.errorType = `${base.errorType}: ${msg.slice(0, 80)}`;
+  }
+  healthCache.set(provider, { at: Date.now(), result: base });
+  return base;
+}
+
+/** 单 Provider 单次调用（带超时）。model 由调用方按 tier 解析（AI_PRIMARY_MODEL / AI_FALLBACK_MODEL / Provider 默认）。 */
+async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: { temperature?: number; maxTokens?: number; model?: string }, timeoutMs: number): Promise<ChatResult> {
   const temperature = opts.temperature ?? 0.7;
   const maxTokens = opts.maxTokens ?? 2000;
   const controller = new AbortController();
@@ -115,7 +193,7 @@ async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: {
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
-          model: process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5",
+          model: opts.model ?? process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5",
           max_tokens: maxTokens,
           temperature,
           messages: messages.map((m) => ({ role: m.role === "system" ? "assistant" : m.role, content: m.content })),
@@ -127,7 +205,7 @@ async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: {
       return {
         text: data.content?.[0]?.text ?? "",
         provider,
-        model: data.model ?? "claude-sonnet-5",
+        model: data.model ?? opts.model ?? "claude-sonnet-5",
         usage: data.usage
           ? { inputTokens: data.usage.input_tokens ?? 0, outputTokens: data.usage.output_tokens ?? 0 }
           : undefined,
@@ -137,12 +215,7 @@ async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: {
     // OpenAI 兼容协议：openai / deepseek / content_api 共用 /chat/completions
     const apiKey =
       provider === "openai" ? process.env.OPENAI_API_KEY! : provider === "deepseek" ? process.env.DEEPSEEK_API_KEY! : process.env.CONTENT_API_KEY!;
-    const model =
-      provider === "openai"
-        ? (process.env.OPENAI_MODEL ?? "gpt-4o")
-        : provider === "deepseek"
-          ? (process.env.DEEPSEEK_MODEL ?? "deepseek-chat")
-          : (process.env.CONTENT_MODEL ?? "gpt-4o-mini");
+    const model = opts.model ?? modelFor(provider, false);
     const url =
       provider === "content_api"
         ? `${(process.env.CONTENT_API_BASE_URL ?? "").replace(/\/$/, "")}/chat/completions`
@@ -205,7 +278,7 @@ export async function chatResilient(
     let lastError = "";
     for (let retry = 0; retry <= maxRetry; retry++) {
       try {
-        const res = await chatOnce(provider, messages, { temperature: opts?.temperature, maxTokens: opts?.maxTokens }, timeoutMs);
+        const res = await chatOnce(provider, messages, { temperature: opts?.temperature, maxTokens: opts?.maxTokens, model: modelFor(provider, i > 0) }, timeoutMs);
         return {
           ...res,
           providerStatus: i === 0 ? "primary_success" : "fallback_success",

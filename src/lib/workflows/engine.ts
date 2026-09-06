@@ -12,11 +12,13 @@
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { eq } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { workflowRuns, workflowTasks } from "@/lib/db/schema";
 import { AI_PROMPTS_DIR } from "@/lib/ai/prompt-registry";
-import { chatResilient, isAiConfigured, AiResilienceError } from "@/lib/ai/providers";
+import { chatResilient, isAiConfigured, AiResilienceError, estimateCost } from "@/lib/ai/providers";
+import { isLiveMode } from "@/lib/services/live-mode";
+import { promptTemplates } from "@/lib/db/schema";
 import { workflowRepository, orchestratorRepository } from "@/lib/repositories";
 import { writeBackRunOutputs } from "@/lib/workflows/writeback";
 import { runQualityGate } from "@/lib/workflows/quality-gate";
@@ -128,9 +130,40 @@ export async function retryWorkflowRun(runId: string): Promise<WorkflowRun | nul
   return run;
 }
 
+/** B-3 §9：Prompt Version 从 prompt_templates 表读取（不绕开版本系统）；无记录回落 main */
+async function resolvePromptVersion(workflowType: string): Promise<string> {
+  try {
+    const rows = await db.select({ v: promptTemplates.currentVersion }).from(promptTemplates).where(eq(promptTemplates.workflowType, workflowType)).orderBy(desc(promptTemplates.updatedAt)).limit(1);
+    return rows[0]?.v ?? "main";
+  } catch {
+    return "main";
+  }
+}
+
 async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteback?: boolean }) {
   const steps = WORKFLOW_STEPS[opts.workflowType];
-  const demo = opts.forceDemo || !isAiConfigured();
+  const live = isLiveMode();
+  const configured = isAiConfigured();
+  // B-3 §5：Live Mode 下未配置 Provider → blocked（needs_manual），禁止产出演示假正文后 completed
+  if (live && !configured && !opts.forceDemo) {
+    const msg = "AI_PROVIDER_NOT_CONFIGURED（Live Mode）：未配置任何 AI Provider，禁止演示假产出。配置 API Key 后重试。";
+    await db.update(workflowRuns).set({ status: "failed", needsManual: true, error: msg, completedAt: new Date() }).where(eq(workflowRuns.id, runId));
+    try {
+      const { notificationService } = await import("@/lib/services/notification");
+      await notificationService.notify({
+        type: "workflow_failed",
+        title: `AI Provider 未配置，需要人工介入（${opts.workflowType}）`,
+        message: msg,
+        link: "/production",
+        entityType: "workflow_runs",
+        entityId: runId,
+        severity: "error",
+      });
+    } catch { /* 通知失败不阻断 */ }
+    await advanceDependenciesOf(runId);
+    return;
+  }
+  const demo = opts.forceDemo || !configured;
 
   await db.update(workflowRuns).set({ status: "running", startedAt: new Date() }).where(eq(workflowRuns.id, runId));
 
@@ -145,8 +178,12 @@ async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteb
 
   try {
     const prompt = await loadPrompt(opts.workflowType);
+    const promptVersion = await resolvePromptVersion(opts.workflowType);
     const results: Record<string, unknown> = {};
     let quality: { pass: boolean; reasons: string[] } | null = null;
+    // B-3 §3：单 run 成本上限（AI_MAX_COST_PER_RUN，USD；估算值累计，超限中止转 needs_manual）
+    const maxCostPerRun = Number(process.env.AI_MAX_COST_PER_RUN ?? 0); // 0 = 不限
+    let runCost = 0;
 
     for (const step of steps) {
       const [task] = await db
@@ -179,18 +216,27 @@ async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteb
             { maxTokens: 4000 },
           );
           output = { provider: res.provider, model: res.model, providerStatus: res.providerStatus, retryCount: res.retryCount, text: res.text.slice(0, 8000) };
-          // V2/V4：AI 用量留痕（规格 §58，含 provider/model/retry/cost）
+          const inputTokens = res.usage?.inputTokens ?? 0;
+          const outputTokens = res.usage?.outputTokens ?? 0;
+          // B-3 §8：usage 全字段留痕（total/fallback_used/estimated——无 usage 返回时标记 estimated，禁止伪造精确值）
           await workflowRepository.logAiUsage({
             workflowRunId: runId,
             provider: res.provider,
             model: res.model,
             retryCount: res.retryCount,
-            promptVersion: "main",
-            inputTokens: res.usage?.inputTokens ?? 0,
-            outputTokens: res.usage?.outputTokens ?? 0,
+            promptVersion,
+            inputTokens,
+            outputTokens,
+            totalTokens: inputTokens + outputTokens,
+            fallbackUsed: res.providerStatus === "fallback_success",
+            estimated: !res.usage,
             cost: String(res.costUsd),
             latency: Date.now() - stepStart,
           });
+          runCost += res.costUsd || estimateCost(res.model, inputTokens, outputTokens);
+          if (maxCostPerRun > 0 && runCost > maxCostPerRun) {
+            throw new Error(`AI_COST_LIMIT_EXCEEDED：本次 run 成本 $${runCost.toFixed(4)} 超过 AI_MAX_COST_PER_RUN $${maxCostPerRun}，中止后续步骤。`);
+          }
         }
         results[step.key] = output;
         await db.update(workflowTasks).set({ status: "completed", output, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
@@ -249,7 +295,7 @@ async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteb
     await advanceDependenciesOf(runId);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    const needsManual = e instanceof AiResilienceError || /AI_PROVIDER_NOT_CONFIGURED|timeout|ETIMEDOUT|ECONNREFUSED/i.test(msg);
+    const needsManual = e instanceof AiResilienceError || /AI_PROVIDER_NOT_CONFIGURED|AI_COST_LIMIT_EXCEEDED|timeout|ETIMEDOUT|ECONNREFUSED/i.test(msg);
     await db
       .update(workflowRuns)
       .set({ status: "failed", needsManual, error: msg.slice(0, 500), completedAt: new Date() })

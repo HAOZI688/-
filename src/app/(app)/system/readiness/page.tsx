@@ -2,7 +2,7 @@ import { db } from "@/lib/db";
 import { sql } from "drizzle-orm";
 import { authEnabled } from "@/lib/auth";
 import { appMode, isLiveMode } from "@/lib/services/live-mode";
-import { isAiConfigured, configuredProviders } from "@/lib/ai/providers";
+import { configuredProviders, checkProviderHealth } from "@/lib/ai/providers";
 import { computeDataConfidence } from "@/lib/services/data-confidence";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -88,19 +88,49 @@ export default async function ReadinessPage() {
   }
 
   // ===== Required =====
-  // 6. AI Provider
-  const ai = isAiConfigured();
+  // 6. AI Provider（B-3 §4：真实请求健康检查——环境变量存在 ≠ Ready）
+  const chain = configuredProviders();
+  const primaryHealth = chain[0] ? await checkProviderHealth(chain[0]) : null;
+  const fallbackHealth = chain[1] ? await checkProviderHealth(chain[1]) : null;
+  const aiVerified = primaryHealth?.reachable === true;
   items.push({
     key: "ai",
-    name: "AI Provider（工作流真实调用）",
+    name: "AI Primary Provider（真实请求验证）",
     tier: "required",
-    verdict: ai ? "PASS" : live ? "FAIL" : "WARN",
-    detail: ai
-      ? `已配置：${configuredProviders().join(" → ")}（超时/重试/Fallback 已启用）`
-      : live
-        ? "未配置任何 AI Key，工作流无法真实产出内容——LIVE 模式必须配置"
-        : "未配置（演示模式，产出为占位内容）；配置 ANTHROPIC_API_KEY 或 CONTENT_API_* 后真实调用",
+    verdict: aiVerified ? "PASS" : live ? "FAIL" : "WARN",
+    detail: aiVerified
+      ? `${primaryHealth!.provider} / ${primaryHealth!.model} 可达（${primaryHealth!.latencyMs}ms）；Fallback: ${fallbackHealth ? `${fallbackHealth.provider} ${fallbackHealth.reachable ? "可达" : "配置但不可达"}` : "未配置"}`
+      : primaryHealth?.configured
+        ? `已配置但请求失败：${primaryHealth.errorType ?? "未知错误"}——检查 Key/网络`
+        : `未配置（${live ? "LIVE 模式必须配置" : "开发模式演示"}）。支持 AI_PRIMARY_PROVIDER / ANTHROPIC_API_KEY / CONTENT_API_* / OPENAI_API_KEY / DEEPSEEK_API_KEY`,
   });
+  items.push({
+    key: "ai_fallback",
+    name: "AI Fallback Provider",
+    tier: "optional",
+    verdict: fallbackHealth ? (fallbackHealth.reachable ? "PASS" : "WARN") : "WARN",
+    detail: fallbackHealth
+      ? `${fallbackHealth.provider}：${fallbackHealth.reachable ? `可达（${fallbackHealth.latencyMs}ms）` : `配置但不可达：${fallbackHealth.errorType}`}`
+      : "未配置（单 Provider 也可运行，仅无故障切换）",
+  });
+
+  // 6b. Prompt Version（B-3 §9：四工作流版本登记）
+  try {
+    const rows = (await db.execute(sql`SELECT workflow_type, current_version FROM prompt_templates WHERE workflow_type IN ('ai_weekly','github_weekly','evergreen','wechat_deep_dive')`)) as unknown as { workflow_type: string; current_version: string }[];
+    const registered = new Set(rows.map((r) => r.workflow_type));
+    const missing = ["ai_weekly", "github_weekly", "evergreen", "wechat_deep_dive"].filter((w) => !registered.has(w));
+    items.push({
+      key: "prompt_version",
+      name: "Prompt Version 登记",
+      tier: "required",
+      verdict: missing.length === 0 ? "PASS" : missing.length === 4 ? "WARN" : "WARN",
+      detail: rows.length
+        ? rows.map((r) => `${r.workflow_type}@${r.current_version}`).join(" · ") + (missing.length ? `；未登记：${missing.join(",")}` : "")
+        : "prompt_templates 无登记（run 将回落 main 版本标记）",
+    });
+  } catch {
+    items.push({ key: "prompt_version", name: "Prompt Version 登记", tier: "required", verdict: "WARN", detail: "无法查询 prompt_templates" });
+  }
 
   // 7. Scheduler 诚实状态（规格 §29：禁止 UI 假装 Auto Scheduler Active）
   const cronSecret = Boolean(process.env.CRON_SECRET);

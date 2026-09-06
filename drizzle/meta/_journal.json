@@ -57,6 +57,13 @@
       "when": 1788507276481,
       "tag": "0007_striped_sway",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1788711364245,
+      "tag": "0008_busy_talos",
+      "breakpoints": true
     }
   ]
 }
