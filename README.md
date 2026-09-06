@@ -87,6 +87,23 @@ scripts/restore-db.sh           # 恢复（验证库模式，已实测）
 | implementation-progress.md | 实施进度（V1-V4 全记录） |
 | _canonical-*.md | V1 基线文档 |
 
+## 使用 /screen 获取小豆芽数据
+
+日常真实数据回流的两层架构：**/screen Skill = 数据采集层，Content OS Import Pipeline = 数据处理层**。
+
+```
+小豆芽数据页 → /screen 抄数（截屏→读图→结构化）
+    → data/metrics-import.csv
+    → Content OS 导入（/data-import 按钮 或 pnpm data:import-screen）
+    → 账号/作品匹配 → 幂等快照（snapshot_date → captured_at）→ 基线/表现重算 → 下轮选题反馈
+```
+
+- Skill 位置：`~/.claude/skills/screen/`（全局，任何项目可用）；触发：项目目录下执行 `/screen 抄数`
+- 输出：`data/metrics-import.csv`（宽表，`record_type=account|post` 区分行类型；`snapshot_date`=数据所属日期，`captured_at`=采集时间；`source_image` 留截图证据；页面没有的字段留空，禁止填 0）
+- 导入：Web `/data-import`「导入 /screen 抄数数据」（预览→确认）或 CLI `pnpm data:import-screen`
+- 平台中文名（抖音/小红书/B站/视频号/公众号）导入侧自动归一为枚举；同日期重复导入自动更新，不产生重复快照
+- Web 应用不调用 Skill、Skill 不调用 Web——两边只通过 CSV 文件解耦
+
 ## 运行约定
 
 - 开发：`pnpm dev`（:3000，用户使用）；生产：`env PORT=3210 pnpm start`（日志 /tmp/contentos-server.log）

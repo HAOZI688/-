@@ -33,7 +33,7 @@ export interface ManualImportResult {
   file: string;
   /** 关联的 data_import_batches.id（CLI/审计留痕用） */
   batchId?: string;
-  detectedType: "account" | "post" | "unknown";
+  detectedType: "account" | "post" | "mixed" | "unknown";
   ok: boolean;
   duplicate?: boolean;
   totalRows: number;
@@ -52,9 +52,11 @@ export interface ManualImportResult {
   message?: string;
 }
 
-/** 表头 → 类型检测（作品列优先：有作品标题即作品级；否则有账号+粉丝列即账号级） */
-export function detectManualCsv(headers: string[]): "account" | "post" | "unknown" {
-  const hasTitle = headers.some((h) => ["作品标题", "title"].includes(h));
+/** 表头 → 类型检测。record_type 列存在时返回 "mixed"（/screen 抄数宽表，按行拆分）。
+ * 作品列优先：有作品标题即作品级；否则有账号+粉丝列即账号级。 */
+export function detectManualCsv(headers: string[]): "account" | "post" | "mixed" | "unknown" {
+  if (headers.some((h) => h.toLowerCase() === "record_type")) return "mixed";
+  const hasTitle = headers.some((h) => ["作品标题", "title", "post_title"].includes(h));
   if (hasTitle) return "post";
   const hasAccount = headers.some((h) => ["账号名称", "账号", "account_name", "昵称"].includes(h));
   const hasMetric = headers.some((h) => ["粉丝数", "followers", "新增粉丝", "播放量", "views"].includes(h));
@@ -92,6 +94,11 @@ export const manualImportService = {
     }
 
     const hash = (await import("node:crypto")).createHash("sha256").update(csvText).digest("hex");
+
+    // B-2：/screen 抄数宽表（record_type 列）→ 按 record_type 拆分，分别走现有账号/作品管道，统计合并
+    if (type === "mixed") {
+      return this.importMixedCsv(csvText, fileName, hash, opts);
+    }
 
     if (type === "post") {
       const r = await xiaodouyaConnector.importPostsCsv(csvText, fileName, { dataSource: "manual", fileHash: hash });
@@ -132,6 +139,113 @@ export const manualImportService = {
     };
     if (!r.duplicate && !opts.skipRecalc) await this.triggerRecalculations(result);
     return result;
+  },
+
+  /**
+   * B-2：混合宽表拆分（record_type=account|post）。两桶各自走现有管道（skipRecalc），
+   * 完成后统一触发一次重算。单桶失败不阻塞另一桶。
+   */
+  async importMixedCsv(csvText: string, fileName: string, fileHash: string, opts: { skipRecalc?: boolean } = {}): Promise<ManualImportResult> {
+    const { headers, rows } = parseCsv(csvText);
+    const typeCol = headers.find((h) => h.toLowerCase() === "record_type");
+    const buckets: Record<string, { data: Record<string, string>; rowIndex: number }[]> = { account: [], post: [] };
+    for (const r of rows) {
+      const t = (r.data[typeCol!] ?? "").trim().toLowerCase();
+      if (t !== "account" && t !== "post") {
+        buckets.account.push(r); // record_type 缺失的行默认按账号级尝试（列缺失会走行级错误）
+        continue;
+      }
+      buckets[t].push(r);
+    }
+
+    const esc = (v: string) => (v.includes(",") || v.includes('"') || v.includes("\n") ? `"${v.replace(/"/g, '""')}"` : v);
+    const merge = (parts: { data: Record<string, string> }[]) => [headers.join(","), ...parts.map((r) => headers.map((h) => esc(r.data[h] ?? "")).join(","))].join("\n");
+
+    const result = emptyResult();
+    result.file = fileName;
+    result.detectedType = "mixed";
+    result.totalRows = rows.length;
+
+    const subResults: ManualImportResult[] = [];
+    for (const [bucketType, bucketRows] of Object.entries(buckets)) {
+      if (!bucketRows.length) continue;
+      const subCsv = merge(bucketRows);
+      try {
+        if (bucketType === "post") {
+          const r = await xiaodouyaConnector.importPostsCsv(subCsv, fileName, { dataSource: "manual", fileHash });
+          subResults.push({ ...emptyResult(), file: fileName, detectedType: "post", totalRows: r.totalRows, created: r.externalPostsCreated, updated: r.externalPostsUpdated, failed: r.failedRows, postsMatched: r.matchedPublications, manualMatchRequired: r.unmatchedPosts ?? 0, postSnapshots: r.snapshotsCreated, duplicateSnapshots: r.snapshotsUpdated ?? 0, batchId: r.batchId, errors: rowErrorsFrom(fileName, r.errors) });
+        } else {
+          const r = await connectorSyncService.importAccountsCsv(subCsv, fileName, { dataSource: "manual", fileHash });
+          subResults.push({ ...emptyResult(), file: fileName, detectedType: "account", totalRows: r.totalRows, created: r.created, updated: r.updated, failed: r.failed, accountsMatched: r.created + r.updated, accountSnapshots: r.accountSnapshots ?? 0, duplicateSnapshots: r.accountSnapshotsUpdated ?? 0, batchId: r.batchId, errors: rowErrorsFrom(fileName, r.errors) });
+        }
+      } catch (e) {
+        subResults.push({ ...emptyResult(), file: fileName, detectedType: bucketType as "post" | "account", failed: bucketRows.length, message: `${bucketType} 桶导入失败: ${e instanceof Error ? e.message.slice(0, 80) : e}` });
+      }
+    }
+
+    for (const sub of subResults) {
+      result.created += sub.created;
+      result.updated += sub.updated;
+      result.failed += sub.failed;
+      result.accountsMatched += sub.accountsMatched;
+      result.postsMatched += sub.postsMatched;
+      result.manualMatchRequired += sub.manualMatchRequired;
+      result.accountSnapshots += sub.accountSnapshots;
+      result.postSnapshots += sub.postSnapshots;
+      result.duplicateSnapshots += sub.duplicateSnapshots;
+      result.errors.push(...sub.errors);
+      if (sub.message) result.errors.push({ file: fileName, rowIndex: 0, field: "", rawValue: "", reason: sub.message });
+    }
+    result.ok = result.failed === 0;
+    result.batchId = subResults.find((r) => r.batchId)?.batchId;
+    if (!opts.skipRecalc) await this.triggerRecalculations(result);
+    return result;
+  },
+
+  /** B-2 §10/§11：/screen 抄数标准文件（data/metrics-import.csv）。UI 与 CLI 共用。 */
+  async importScreenCsv(opts: { skipRecalc?: boolean } = {}): Promise<ManualImportResult> {
+    const file = path.join(process.cwd(), MANUAL_DATA_DIR, "metrics-import.csv");
+    let text: string;
+    try {
+      text = await readFile(file, "utf-8");
+    } catch {
+      return { ...emptyResult(), file: `${MANUAL_DATA_DIR}/metrics-import.csv`, ok: false, message: "尚未发现抄数数据：请在项目目录执行 /screen 抄数（生成 data/metrics-import.csv）后再导入" };
+    }
+    return this.importFile(text, `${MANUAL_DATA_DIR}/metrics-import.csv`, opts);
+  },
+
+  /** B-2 §10：导入前预览（行数 / 类型 / 平台 / 日期范围 / 前 5 行） */
+  async previewScreenCsv(): Promise<{ exists: boolean; message?: string; totalRows: number; byType: Record<string, number>; platforms: string[]; dateRange: [string, string] | null; sample: Record<string, string>[]; headers: string[] }> {
+    const file = path.join(process.cwd(), MANUAL_DATA_DIR, "metrics-import.csv");
+    let text: string;
+    try {
+      text = await readFile(file, "utf-8");
+    } catch {
+      return { exists: false, totalRows: 0, byType: {}, platforms: [], dateRange: null, sample: [], headers: [], message: "尚未发现抄数数据，请先在项目目录执行 /screen 抄数" };
+    }
+    const { headers, rows } = parseCsv(text);
+    const byType: Record<string, number> = {};
+    const platforms = new Set<string>();
+    const dates: string[] = [];
+    const dateCol = headers.find((h) => ["snapshot_date", "数据日期", "统计日期", "日期", "date"].includes(h));
+    const platformCol = headers.find((h) => h.toLowerCase() === "platform" || h === "平台");
+    const typeCol = headers.find((h) => h.toLowerCase() === "record_type");
+    for (const r of rows) {
+      const t = (typeCol ? r.data[typeCol] : "") || (detectManualCsv(headers) === "post" ? "post" : "account");
+      byType[t] = (byType[t] ?? 0) + 1;
+      if (platformCol && r.data[platformCol]) platforms.add(r.data[platformCol]);
+      if (dateCol && r.data[dateCol]) dates.push(r.data[dateCol]);
+    }
+    dates.sort();
+    return {
+      exists: true,
+      totalRows: rows.length,
+      byType,
+      platforms: [...platforms],
+      dateRange: dates.length ? [dates[0], dates[dates.length - 1]] : null,
+      sample: rows.slice(0, 5).map((r) => r.data),
+      headers,
+    };
   },
 
   /** B-1 §13：快照落库后自动刷新 Baseline + Topic Performance（无需手动点“重新计算表现”） */
@@ -207,7 +321,7 @@ export const manualImportService = {
 
 function emptyResult(): ManualImportResult {
   return {
-    file: "", detectedType: "unknown", ok: false, totalRows: 0, created: 0, updated: 0,
+    file: "", detectedType: "unknown" as const, ok: false, totalRows: 0, created: 0, updated: 0,
     skipped: 0, failed: 0, accountsMatched: 0, postsMatched: 0, manualMatchRequired: 0,
     accountSnapshots: 0, postSnapshots: 0, duplicateSnapshots: 0, errors: [],
   };

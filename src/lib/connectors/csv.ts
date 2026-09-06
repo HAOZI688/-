@@ -184,8 +184,9 @@ export function parseDate(v: string | undefined): Date | null {
   return null;
 }
 
-/** 日期列的常见表头（抄数 CSV） */
-export const DATE_COLUMN_ALIASES = ["日期", "统计日期", "数据日期", "date", "captured_at", "snapshot_date", "capturedat"];
+/** 日期列的常见表头（抄数 CSV）。顺序即优先级：数据日期列在前；captured_at（采集时间）最后兜底——
+ * B-2 §14：snapshot_date（数据所属日期）与 captured_at（截图/采集时间）必须区分，两者同时在时用前者 */
+export const DATE_COLUMN_ALIASES = ["snapshot_date", "数据日期", "统计日期", "日期", "date", "captured_at"];
 
 /**
  * B-1 抄数管道专用：把 CSV 日期列解析为**项目默认时区的稳定 timestamp**。

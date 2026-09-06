@@ -51,3 +51,20 @@ export async function importManualCsvAction(file: File): Promise<{ ok: boolean; 
   revalidatePath("/dashboard");
   return { ok: result.ok, error: result.ok ? undefined : result.message, result };
 }
+
+/** B-2：预览 /screen 抄数标准文件（data/metrics-import.csv） */
+export async function previewScreenImportAction() {
+  return manualImportService.previewScreenCsv();
+}
+
+/** B-2：执行 /screen 抄数导入（与 CLI data:import-screen 共用 importScreenCsv） */
+export async function executeScreenImportAction(): Promise<{ ok: boolean; error?: string; result?: ManualImportResult }> {
+  const result = await manualImportService.importScreenCsv();
+  if (result.batchId || result.totalRows > 0) await manualImportService.auditBatch(result);
+  revalidatePath("/data-import");
+  revalidatePath("/analytics/topics");
+  revalidatePath("/analytics/attribution");
+  revalidatePath("/connectors/xiaodouya");
+  revalidatePath("/dashboard");
+  return { ok: result.ok, error: result.ok ? undefined : result.message, result };
+}

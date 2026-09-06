@@ -12,7 +12,7 @@ import { manualImportService, MANUAL_DATA_DIR, type ManualImportResult } from ".
 import { readFile } from "node:fs/promises";
 
 function printResult(r: ManualImportResult) {
-  const type = r.detectedType === "post" ? "作品级" : r.detectedType === "account" ? "账号级" : "未识别";
+  const type = r.detectedType === "post" ? "作品级" : r.detectedType === "account" ? "账号级" : r.detectedType === "mixed" ? "混合宽表" : "未识别";
   console.log(`\n📄 ${r.file}（${type}${r.duplicate ? " · 重复文件跳过" : ""}）`);
   if (r.message) console.log(`   ⚠️  ${r.message}`);
   console.log(
@@ -54,6 +54,15 @@ function printSummary(results: ManualImportResult[]) {
 
 async function main() {
   const args = process.argv.slice(2);
+  // B-2：/screen 抄数标准文件（data/metrics-import.csv）→ 现有 Import Pipeline
+  if (args.includes("--screen")) {
+    console.log("▶ 导入 /screen 抄数数据（data/metrics-import.csv）…");
+    const r = await manualImportService.importScreenCsv();
+    await manualImportService.auditBatch(r);
+    printResult(r);
+    printSummary([r]);
+    return;
+  }
   if (args.includes("--all")) {
     console.log(`▶ 批量导入 ${MANUAL_DATA_DIR}/*.csv …`);
     const results = await manualImportService.importAll();
@@ -67,7 +76,7 @@ async function main() {
 
   const file = args.find((a) => !a.startsWith("--"));
   if (!file) {
-    console.error("用法：pnpm data:import-manual <file.csv> 或 pnpm data:import-manual-all");
+    console.error("用法：pnpm data:import-manual <file.csv> | pnpm data:import-manual-all | pnpm data:import-screen");
     process.exit(1);
   }
   console.log(`▶ 导入 ${file} …`);

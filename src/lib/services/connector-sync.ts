@@ -1,6 +1,7 @@
 import { connectorRepository, metricsRepository, socialAccountRepository } from "@/lib/repositories";
 import { xiaodouyaConnector } from "@/lib/connectors/xiaodouya";
 import { parseCsv, parseNumber, parseDateLocal, DATE_COLUMN_ALIASES } from "@/lib/connectors/csv";
+import { normalizePlatform } from "@/lib/platform-alias";
 import { notificationService } from "@/lib/services/notification";
 import { auditRepository } from "@/lib/repositories";
 import { db } from "@/lib/db";
@@ -220,7 +221,7 @@ export const connectorSyncService = {
     const profileVisitsCol = col(["主页访问", "主页访问量", "profile_visits"]);
     const impressionsCol = col(["曝光量", "曝光", "impressions"]);
     const viewsCol = col(["播放量", "播放", "views"]);
-    const engagementsCol = col(["互动量", "互动", "engagements"]);
+    const engagementsCol = col(["互动量", "互动", "engagements", "engagement"]);
 
     let created = 0;
     let updated = 0;
@@ -228,8 +229,6 @@ export const connectorSyncService = {
     let accountSnapshots = 0;
     let accountSnapshotsUpdated = 0;
     const failedRowData: { rowIndex: number; row: Record<string, string>; error: string }[] = [];
-    const platformMap: Record<string, string> = { 抖音: "douyin", 微信: "wechat", 公众号: "wechat", 小红书: "xiaohongshu", 视频号: "wechat_video", 快手: "kuaishou", B站: "bilibili", 哔哩哔哩: "bilibili", 其他: "other" };
-
     for (const { data: row, rowIndex } of rows) {
       try {
         const accountName = nameCol ? row[nameCol] : "";
@@ -238,8 +237,8 @@ export const connectorSyncService = {
           failed++;
           continue;
         }
-        const rawPlatform = platformCol ? row[platformCol] : "其他";
-        const platform = (platformMap[rawPlatform] ?? rawPlatform.toLowerCase() ?? "other") as never;
+        // B-2：平台名归一（中文名/大小写 → 枚举），与作品导入共用 normalizePlatform
+        const platform = normalizePlatform(platformCol ? row[platformCol] : "其他") as never;
         const extId = extIdCol ? row[extIdCol] : "";
 
         const existing = await db.select().from(socialAccounts).where(sqlNameMatch(accountName)).limit(1);

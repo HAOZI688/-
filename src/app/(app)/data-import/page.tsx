@@ -1,14 +1,14 @@
 "use client";
 
 import { useState } from "react";
-import { importXiaodouyaCsv, importManualCsvAction } from "@/app/actions/import";
+import { importXiaodouyaCsv, importManualCsvAction, previewScreenImportAction, executeScreenImportAction } from "@/app/actions/import";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { UploadCloud, FileSpreadsheet, CheckCircle2, XCircle, ClipboardList } from "lucide-react";
+import { UploadCloud, FileSpreadsheet, CheckCircle2, XCircle, ClipboardList, MonitorDown } from "lucide-react";
 
 type ManualResult = {
   file: string;
-  detectedType: "account" | "post" | "unknown";
+  detectedType: "account" | "post" | "mixed" | "unknown";
   ok: boolean;
   duplicate?: boolean;
   totalRows: number;
@@ -27,6 +27,17 @@ type ManualResult = {
   message?: string;
 };
 
+type ScreenPreview = {
+  exists: boolean;
+  message?: string;
+  totalRows: number;
+  byType: Record<string, number>;
+  platforms: string[];
+  dateRange: [string, string] | null;
+  sample: Record<string, string>[];
+  headers: string[];
+};
+
 /**
  * 数据导入（规格 §73 + B-1）：小豆芽 CSV 导入 + 人工抄数 CSV 导入（同一 Import Pipeline）。
  */
@@ -39,6 +50,31 @@ export default function DataImportPage() {
   const [manualFile, setManualFile] = useState<File | null>(null);
   const [manualImporting, setManualImporting] = useState(false);
   const [manualResult, setManualResult] = useState<ManualResult | null>(null);
+
+  // B-2 /screen 抄数
+  const [screenPreview, setScreenPreview] = useState<ScreenPreview | null>(null);
+  const [screenResult, setScreenResult] = useState<ManualResult | null>(null);
+  const [screenBusy, setScreenBusy] = useState(false);
+
+  async function handleScreenPreview() {
+    setScreenBusy(true);
+    setScreenResult(null);
+    try {
+      setScreenPreview(await previewScreenImportAction());
+    } finally {
+      setScreenBusy(false);
+    }
+  }
+
+  async function handleScreenImport() {
+    setScreenBusy(true);
+    try {
+      const res = await executeScreenImportAction();
+      if (res.result) setScreenResult(res.result);
+    } finally {
+      setScreenBusy(false);
+    }
+  }
 
   async function handleImport() {
     if (!file) return;
@@ -78,6 +114,98 @@ export default function DataImportPage() {
           两条入口、同一管道：小豆芽导出 CSV（自动化回流）+ 人工抄数 CSV（B-1：日期列 → captured_at，幂等快照）。
         </p>
       </div>
+
+      {/* ===== B-2：/screen 抄数标准入口 ===== */}
+      <Card className="border-indigo-100">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <MonitorDown className="h-4 w-4 text-indigo-600" />
+            导入 /screen 抄数数据
+            <Badge variant="blue">B-2</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-[11px] text-zinc-500">
+            在项目目录打开 Claude Code → 小豆芽切到平台数据页 → 执行 <code className="rounded bg-zinc-100 px-1">/screen 抄数</code>（逐平台）→
+            数据写入 <code className="rounded bg-zinc-100 px-1">data/metrics-import.csv</code> → 这里一键导入。
+            同一数据日期重复导入自动更新，不产生重复快照。
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={handleScreenPreview}
+              disabled={screenBusy}
+              className="rounded-md border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-50"
+            >
+              {screenBusy ? "读取中…" : "① 预览 data/metrics-import.csv"}
+            </button>
+            <button
+              onClick={handleScreenImport}
+              disabled={screenBusy || !screenPreview?.exists}
+              className="rounded-md bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              ② 确认导入
+            </button>
+          </div>
+
+          {screenPreview && !screenPreview.exists && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              📭 尚未发现抄数数据，请先在项目目录执行 <code className="rounded bg-amber-100 px-1">/screen 抄数</code>
+              <div className="mt-1 text-[11px] text-amber-600">步骤：项目目录打开 Claude Code → 小豆芽切到平台数据页 → /screen 抄数 → 切下一平台重复 → 回到这里导入</div>
+            </div>
+          )}
+
+          {screenPreview?.exists && (
+            <div className="rounded-md border border-zinc-200 bg-zinc-50 p-3 text-xs">
+              <div className="grid grid-cols-2 gap-1 text-zinc-600 md:grid-cols-4">
+                <span>总行数：{screenPreview.totalRows}</span>
+                <span>类型：{Object.entries(screenPreview.byType).map(([k, v]) => `${k}×${v}`).join(" / ") || "—"}</span>
+                <span>平台：{screenPreview.platforms.join("、") || "—"}</span>
+                <span>日期范围：{screenPreview.dateRange ? `${screenPreview.dateRange[0]} ~ ${screenPreview.dateRange[1]}` : "—"}</span>
+              </div>
+              <details className="mt-1.5">
+                <summary className="cursor-pointer text-[11px] text-zinc-500">样本（前 5 行）</summary>
+                <pre className="mt-1 max-h-40 overflow-auto rounded bg-white p-2 text-[10px] leading-relaxed text-zinc-600">{JSON.stringify(screenPreview.sample, null, 1)}</pre>
+              </details>
+            </div>
+          )}
+
+          {screenResult && (
+            <div className={`rounded-md border p-3 text-xs ${screenResult.ok ? "border-emerald-200 bg-emerald-50" : "border-amber-200 bg-amber-50"}`}>
+              {screenResult.ok ? (
+                <div className="flex items-center gap-1.5 font-medium text-emerald-700">
+                  <CheckCircle2 className="h-3.5 w-3.5" /> /screen 抄数导入完成（{screenResult.detectedType}）
+                </div>
+              ) : (
+                <div className="flex items-center gap-1.5 font-medium text-amber-700">
+                  <XCircle className="h-3.5 w-3.5" /> 部分完成 / 失败
+                </div>
+              )}
+              {screenResult.message && <div className="mt-1 text-red-600">{screenResult.message}</div>}
+              <div className="mt-1.5 grid grid-cols-2 gap-1 text-zinc-600 md:grid-cols-4">
+                <span>总行数：{screenResult.totalRows}</span>
+                <span>新建：{screenResult.created}</span>
+                <span>更新：{screenResult.updated}</span>
+                <span>失败：{screenResult.failed}</span>
+                <span>账号快照：{screenResult.accountSnapshots}</span>
+                <span>作品快照：{screenResult.postSnapshots}</span>
+                <span>幂等更新：{screenResult.duplicateSnapshots}</span>
+                <span>需人工匹配：{screenResult.manualMatchRequired}</span>
+              </div>
+              {(screenResult.triggeredRecalculations?.length ?? 0) > 0 && (
+                <div className="mt-1.5 text-[11px] text-emerald-700">已自动触发：{screenResult.triggeredRecalculations!.join(" · ")}</div>
+              )}
+              {screenResult.errors.length > 0 && (
+                <div className="mt-2 space-y-1 rounded border border-red-200 bg-white p-2">
+                  <div className="font-semibold text-red-600">失败行明细</div>
+                  {screenResult.errors.slice(0, 10).map((e, i) => (
+                    <div key={i} className="font-mono text-[10px] text-red-500">行{e.rowIndex} · {e.reason}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* ===== B-1：抄数 CSV 导入 ===== */}
       <Card className="border-blue-100">

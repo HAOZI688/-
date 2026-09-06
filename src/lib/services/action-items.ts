@@ -213,6 +213,33 @@ export const actionItemsService = {
       }
     } catch { /* skip */ }
 
+    // 8. B-2：每日抄数提醒——运营已启用 /screen 抄数后，目标平台当天没有新 manual 快照时提醒
+    try {
+      const TARGET_PLATFORMS = ["douyin", "xiaohongshu", "bilibili", "wechat_video", "wechat"] as const;
+      const PLATFORM_CN: Record<string, string> = { douyin: "抖音", xiaohongshu: "小红书", bilibili: "B站", wechat_video: "视频号", wechat: "公众号" };
+      const rows = (await db.execute(sql`
+        SELECT DISTINCT s.platform
+        FROM account_metric_snapshots am
+        JOIN social_accounts s ON s.id = am.social_account_id
+        WHERE am.data_source = 'manual' AND am.captured_at >= date_trunc('day', now())
+      `)) as unknown as { platform: string }[];
+      const capturedToday = new Set(rows.map((r) => r.platform));
+      const missing = TARGET_PLATFORMS.filter((p) => !capturedToday.has(p));
+      // 只有运营已经开始抄数（存在 manual 快照）才每天提醒；完全没有时不打扰（引导在 /data-import）
+      const hasAny = (await db.execute(sql`SELECT 1 FROM account_metric_snapshots WHERE data_source='manual' LIMIT 1`)) as unknown as unknown[];
+      if (hasAny.length > 0 && missing.length > 0) {
+        out.push({
+          type: "connector",
+          priority: "P2",
+          title: "今日数据尚未抄数",
+          description: `待抄平台：${missing.map((p) => PLATFORM_CN[p] ?? p).join("、")}。如何抄数：项目目录打开 Claude Code → 小豆芽切到该平台数据页 → 执行 /screen 抄数 → /data-import 一键导入。`,
+          targetUrl: "/data-import",
+          entityType: "screen_capture",
+          entityId: `daily-${new Date().toISOString().slice(0, 10)}`,
+        });
+      }
+    } catch { /* skip */ }
+
     return out;
   },
 

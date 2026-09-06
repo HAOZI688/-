@@ -2,6 +2,7 @@ import { connectorRepository, metricsRepository, publicationRepository, socialAc
 import { metricNormalizationService } from "@/lib/services";
 import { parseCsv, parseNumber, parseDate, parseDateLocal, DATE_COLUMN_ALIASES, type CsvRow } from "./csv";
 import { createHash } from "node:crypto";
+import { normalizePlatform } from "@/lib/platform-alias";
 
 /**
  * 小豆芽数据集成（规格 §34-§43）。
@@ -109,7 +110,7 @@ export const xiaodouyaConnector = {
 
     const errors: string[] = [];
     if (!headers.length) errors.push("CSV 为空或无表头");
-    const titleColPre = headers.find((h) => ["作品标题", "title"].includes(h));
+    const titleColPre = headers.find((h) => ["作品标题", "title", "post_title"].includes(h));
     if (!titleColPre) errors.push("缺少必需字段: 作品标题");
     // 小豆芽导出必须三件套；manual 抄数允许无作品ID/发布时间（按标题生成稳定 ID，日期列做快照时间）
     if (!opts.dataSource || opts.dataSource === "xiaodouya_import") {
@@ -120,10 +121,10 @@ export const xiaodouyaConnector = {
     // 字段名归一化：小豆芽导出列名 → 标准列（B-1 扩充抄数列：日期/阅读/曝光/完播率/主页访问）
     const col = (aliases: string[]): string | null => aliases.find((a) => headers.includes(a)) ?? null;
     const postIdCol = col(["作品ID", "post_id", "external_post_id"]);
-    const titleCol = col(["作品标题", "title"]);
-    const timeCol = col(["发布时间", "published_at", "created_at"]);
+    const titleCol = col(["作品标题", "title", "post_title"]);
+    const timeCol = col(["发布时间", "published_at", "created_at", "post_published_at"]);
     const capturedCol = col(DATE_COLUMN_ALIASES);
-    const urlCol = col(["作品链接", "url", "external_url"]);
+    const urlCol = col(["作品链接", "url", "external_url", "post_url"]);
     const accountCol = col(["账号名称", "account_name", "账号"]);
     const platformCol = col(["平台", "platform"]);
     const likesCol = col(["点赞数", "likes"]);
@@ -161,7 +162,7 @@ export const xiaodouyaConnector = {
     // 账号映射：小豆芽 CSV 内账号名 → social_accounts
     const accounts = await socialAccountRepository.list();
     const accountByName = new Map(accounts.map((a) => [a.accountName, a]));
-    const platformDefault = platformCol ? String(rows[0]?.data[platformCol] ?? "").toLowerCase() : "";
+    const platformDefault = platformCol ? normalizePlatform(rows[0]?.data[platformCol]) : "";
 
     let success = 0;
     let created = 0;
@@ -176,14 +177,9 @@ export const xiaodouyaConnector = {
       try {
         let postId = postIdCol ? row[postIdCol] : "";
         const title = titleCol ? row[titleCol] : "";
-        // B-1：manual 抄数无作品ID → 按平台+账号+标题生成确定性 ID（重复导入幂等）
         if (!postId && !title) {
           failedRowData.push({ rowIndex, row, error: "行缺少作品ID 且缺少作品标题（二者至少其一）: " + JSON.stringify(row).slice(0, 80) });
           continue;
-        }
-        if (!postId) {
-          const accountNamePre = accountCol ? row[accountCol] : "";
-          postId = stableManualPostId(String(platformDefault || "other"), accountNamePre, title);
         }
         const publishedAt = timeCol ? parseDate(row[timeCol]) : null;
         // B-1：日期列 → captured_at（数据实际日期，不用系统时间；本地时区稳定 timestamp）
@@ -195,7 +191,12 @@ export const xiaodouyaConnector = {
         const externalUrl = urlCol ? row[urlCol] : undefined;
         const accountName = accountCol ? row[accountCol] : "";
         const account = accountName ? accountByName.get(accountName) : undefined;
-        const platform = (account?.platform ?? (platformDefault || "other")) as never;
+        // B-2：平台列每行归一（中文名/大小写 → 枚举），账号已映射时以账号为准
+        const platform = ((account?.platform as string) ?? ((platformCol ? normalizePlatform(row[platformCol]) : platformDefault) || "other")) as never;
+        // B-1/B-2：manual 抄数无作品ID → 按【归一后平台+账号+标题】生成确定性 ID（跨格式重导幂等的键必须稳定）
+        if (!postId) {
+          postId = stableManualPostId(String(platform), accountName, title);
+        }
 
         // 作品 upsert（Post ID / URL 幂等；历史导入标记 historical_import + data_source）
         const { post, created: isNew } = await connectorRepository.upsertExternalPost({
