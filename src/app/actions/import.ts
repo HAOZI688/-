@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { xiaodouyaConnector } from "@/lib/connectors/xiaodouya";
 import { readCsvFile } from "@/lib/connectors/csv";
+import { manualImportService, type ManualImportResult } from "@/lib/services/manual-import";
 
 /**
  * 小豆芽 CSV 导入（规格 §38）：上传 → 解析 → 检测 → 导入 → 匹配 → 快照。
@@ -32,4 +33,21 @@ export async function confirmExternalPostMatch(formData: FormData) {
   });
   revalidatePath("/connectors/xiaodouya");
   return { ok: true as const };
+}
+
+/**
+ * B-1：抄数 CSV 导入（人工数据 → 正式闭环）。
+ * 与 CLI（pnpm data:import-manual）共用 manualImportService。
+ */
+export async function importManualCsvAction(file: File): Promise<{ ok: boolean; error?: string; result?: ManualImportResult }> {
+  if (!file) return { ok: false, error: "未选择文件" };
+  const { text } = await readCsvFile(file);
+  const result = await manualImportService.importFile(text, file.name);
+  await manualImportService.auditBatch(result);
+  revalidatePath("/data-import");
+  revalidatePath("/analytics/topics");
+  revalidatePath("/analytics/attribution");
+  revalidatePath("/connectors/xiaodouya");
+  revalidatePath("/dashboard");
+  return { ok: result.ok, error: result.ok ? undefined : result.message, result };
 }

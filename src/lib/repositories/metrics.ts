@@ -69,6 +69,34 @@ export const metricsRepository = {
     return rows[0];
   },
 
+  /**
+   * B-1：幂等快照——键 = external_post_id + captured_at + data_source。
+   * 同一 CSV 日期重复导入 → updated（不产生 duplicate created）。
+   */
+  async upsertPostSnapshot(input: typeof postMetricSnapshots.$inferInsert): Promise<{ row: typeof postMetricSnapshots.$inferSelect; status: "created" | "updated" }> {
+    const existing = await db
+      .select()
+      .from(postMetricSnapshots)
+      .where(
+        and(
+          eq(postMetricSnapshots.externalPostId, input.externalPostId as string),
+          eq(postMetricSnapshots.capturedAt, input.capturedAt as Date),
+          eq(postMetricSnapshots.dataSource, input.dataSource ?? "xiaodouya_import"),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      const rows = await db
+        .update(postMetricSnapshots)
+        .set({ ...input, id: undefined, createdAt: undefined } as never)
+        .where(eq(postMetricSnapshots.id, existing[0].id))
+        .returning();
+      return { row: rows[0], status: "updated" };
+    }
+    const rows = await db.insert(postMetricSnapshots).values(input).returning();
+    return { row: rows[0], status: "created" };
+  },
+
   async createPostSnapshots(inputs: typeof postMetricSnapshots.$inferInsert[]) {
     if (!inputs.length) return [];
     return db.insert(postMetricSnapshots).values(inputs).returning();
@@ -94,6 +122,34 @@ export const metricsRepository = {
   async createAccountSnapshot(input: typeof accountMetricSnapshots.$inferInsert) {
     const rows = await db.insert(accountMetricSnapshots).values(input).returning();
     return rows[0];
+  },
+
+  /**
+   * B-1：幂等快照——键 = social_account_id + captured_at + data_source。
+   * 同一 CSV 日期重复导入 → updated（不产生 duplicate created）。
+   */
+  async upsertAccountSnapshot(input: typeof accountMetricSnapshots.$inferInsert): Promise<{ row: typeof accountMetricSnapshots.$inferSelect; status: "created" | "updated" }> {
+    const existing = await db
+      .select()
+      .from(accountMetricSnapshots)
+      .where(
+        and(
+          eq(accountMetricSnapshots.socialAccountId, input.socialAccountId as string),
+          eq(accountMetricSnapshots.capturedAt, input.capturedAt as Date),
+          eq(accountMetricSnapshots.dataSource, input.dataSource ?? "xiaodouya_import"),
+        ),
+      )
+      .limit(1);
+    if (existing[0]) {
+      const rows = await db
+        .update(accountMetricSnapshots)
+        .set({ ...input, id: undefined, createdAt: undefined } as never)
+        .where(eq(accountMetricSnapshots.id, existing[0].id))
+        .returning();
+      return { row: rows[0], status: "updated" };
+    }
+    const rows = await db.insert(accountMetricSnapshots).values(input).returning();
+    return { row: rows[0], status: "created" };
   },
 
   async listAccountSnapshots(socialAccountId?: string) {

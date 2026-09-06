@@ -1,6 +1,7 @@
 import { connectorRepository, metricsRepository, publicationRepository, socialAccountRepository, auditRepository } from "@/lib/repositories";
 import { metricNormalizationService } from "@/lib/services";
-import { parseCsv, parseNumber, parseDate, type CsvRow } from "./csv";
+import { parseCsv, parseNumber, parseDate, parseDateLocal, DATE_COLUMN_ALIASES, type CsvRow } from "./csv";
+import { createHash } from "node:crypto";
 
 /**
  * 小豆芽数据集成（规格 §34-§43）。
@@ -26,6 +27,10 @@ export interface XiaodouyaImportResult {
   externalPostsUpdated: number;
   matchedPublications: number;
   snapshotsCreated: number;
+  /** B-1：幂等统计（快照 updated）+ 匹配计数 */
+  snapshotsUpdated?: number;
+  postsMatched?: number;
+  unmatchedPosts?: number;
   /** 重复文件跳过（未新建批次，返回已有批次 ID） */
   duplicate?: boolean;
   errors: string[];
@@ -38,10 +43,21 @@ export interface XiaodouyaImportOptions {
   fileHash?: string;
   /** 检测到的编码（utf8/gbk），留痕用 */
   encoding?: "utf8" | "gbk";
+  /**
+   * B-1：数据来源（落 external_posts / post_metric_snapshots.data_source）。
+   * 抄数 CSV 用 "manual"（Live Mode 视为真实数据）；默认小豆芽导入。
+   */
+  dataSource?: "manual" | "xiaodouya_import" | "historical_import";
 }
 
-/** 作品级 CSV 期望的最小字段（小豆芽导出常见列名） */
+/** 作品级 CSV 期望的最小字段（小豆芽导出常见列名）；manual 抄数无作品ID 时按标题生成稳定 ID */
 export const REQUIRED_POST_FIELDS = ["作品ID", "作品标题", "发布时间"] as const;
+
+/** B-1：无作品ID 时生成确定性外部 ID（同一标题+账号+平台重复导入 → 同一 post，幂等） */
+function stableManualPostId(platform: string, accountName: string, title: string): string {
+  const hash = createHash("sha1").update(`${platform}|${accountName}|${title}`).digest("hex").slice(0, 16);
+  return `manual_${hash}`;
+}
 
 export const xiaodouyaConnector = {
   /**
@@ -93,14 +109,20 @@ export const xiaodouyaConnector = {
 
     const errors: string[] = [];
     if (!headers.length) errors.push("CSV 为空或无表头");
-    const missing = REQUIRED_POST_FIELDS.filter((f) => !headers.includes(f));
-    if (missing.length) errors.push(`缺少必需字段: ${missing.join(", ")}`);
+    const titleColPre = headers.find((h) => ["作品标题", "title"].includes(h));
+    if (!titleColPre) errors.push("缺少必需字段: 作品标题");
+    // 小豆芽导出必须三件套；manual 抄数允许无作品ID/发布时间（按标题生成稳定 ID，日期列做快照时间）
+    if (!opts.dataSource || opts.dataSource === "xiaodouya_import") {
+      const missing = REQUIRED_POST_FIELDS.filter((f) => !headers.includes(f));
+      if (missing.length) errors.push(`缺少必需字段: ${missing.join(", ")}`);
+    }
 
-    // 字段名归一化：小豆芽导出列名 → 标准列
+    // 字段名归一化：小豆芽导出列名 → 标准列（B-1 扩充抄数列：日期/阅读/曝光/完播率/主页访问）
     const col = (aliases: string[]): string | null => aliases.find((a) => headers.includes(a)) ?? null;
     const postIdCol = col(["作品ID", "post_id", "external_post_id"]);
     const titleCol = col(["作品标题", "title"]);
     const timeCol = col(["发布时间", "published_at", "created_at"]);
+    const capturedCol = col(DATE_COLUMN_ALIASES);
     const urlCol = col(["作品链接", "url", "external_url"]);
     const accountCol = col(["账号名称", "account_name", "账号"]);
     const platformCol = col(["平台", "platform"]);
@@ -109,6 +131,10 @@ export const xiaodouyaConnector = {
     const sharesCol = col(["分享数", "shares"]);
     const viewsCol = col(["播放量", "views", "plays"]);
     const savesCol = col(["收藏数", "saves"]);
+    const readsCol = col(["阅读量", "reads"]);
+    const impressionsCol = col(["曝光量", "impressions"]);
+    const completionCol = col(["完播率", "completion_rate"]);
+    const profileVisitsCol = col(["主页访问", "主页访问量", "profile_visits"]);
 
     // 确保标准指标定义存在
     await metricNormalizationService.ensureStandardDefinitions();
@@ -142,17 +168,30 @@ export const xiaodouyaConnector = {
     let updated = 0;
     let matched = 0;
     let snapshots = 0;
+    let snapshotsUpdated = 0;
     const failedRowData: { rowIndex: number; row: Record<string, string>; error: string }[] = [];
+    const dataSource = opts.dataSource ?? "xiaodouya_import";
 
     for (const { data: row, rowIndex } of rows) {
       try {
-        const postId = postIdCol ? row[postIdCol] : "";
-        if (!postId) {
-          failedRowData.push({ rowIndex, row, error: `行缺少作品ID: ${JSON.stringify(row).slice(0, 80)}` });
+        let postId = postIdCol ? row[postIdCol] : "";
+        const title = titleCol ? row[titleCol] : "";
+        // B-1：manual 抄数无作品ID → 按平台+账号+标题生成确定性 ID（重复导入幂等）
+        if (!postId && !title) {
+          failedRowData.push({ rowIndex, row, error: "行缺少作品ID 且缺少作品标题（二者至少其一）: " + JSON.stringify(row).slice(0, 80) });
           continue;
         }
-        const title = titleCol ? row[titleCol] : "";
+        if (!postId) {
+          const accountNamePre = accountCol ? row[accountCol] : "";
+          postId = stableManualPostId(String(platformDefault || "other"), accountNamePre, title);
+        }
         const publishedAt = timeCol ? parseDate(row[timeCol]) : null;
+        // B-1：日期列 → captured_at（数据实际日期，不用系统时间；本地时区稳定 timestamp）
+        const capturedAt = capturedCol ? parseDateLocal(row[capturedCol]) : null;
+        if (capturedCol && row[capturedCol] && !capturedAt) {
+          failedRowData.push({ rowIndex, row, error: `列[${capturedCol}] 值[${row[capturedCol]}] 无法解析为日期` });
+          continue;
+        }
         const externalUrl = urlCol ? row[urlCol] : undefined;
         const accountName = accountCol ? row[accountCol] : "";
         const account = accountName ? accountByName.get(accountName) : undefined;
@@ -169,7 +208,7 @@ export const xiaodouyaConnector = {
           socialAccountId: account?.id ?? null,
           matchStatus: "unmatched",
           historicalImport: historical ? 1 : undefined,
-          dataSource: historical ? "historical_import" : "xiaodouya_import",
+          dataSource,
           rawData: { row, encoding: opts.encoding ?? null, fileName },
         });
         if (isNew) created++;
@@ -179,9 +218,17 @@ export const xiaodouyaConnector = {
         const match = await this.matchPublication(post.id, externalUrl, platform, title, account?.id ?? null, publishedAt);
         if (match) matched++;
 
-        // 作品指标快照（T+1：导入时点的首张快照）
-        const snap = await this.createPostSnapshot(post.id, post.publicationId, row, viewsCol, likesCol, commentsCol, sharesCol, savesCol);
-        if (snap) snapshots++;
+        // 作品指标快照（日期列做 captured_at；幂等：同 post+日期+来源 → updated 不重复建）
+        const snap = await this.createPostSnapshot({
+          postId: post.id,
+          publicationId: post.publicationId,
+          row,
+          cols: { viewsCol, likesCol, commentsCol, sharesCol, savesCol, readsCol, impressionsCol, completionCol, profileVisitsCol },
+          capturedAt: capturedAt ?? new Date(),
+          dataSource,
+        });
+        if (snap.status === "created") snapshots++;
+        else snapshotsUpdated++;
 
         success++;
       } catch (e) {
@@ -219,6 +266,9 @@ export const xiaodouyaConnector = {
       externalPostsUpdated: updated,
       matchedPublications: matched,
       snapshotsCreated: snapshots,
+      snapshotsUpdated,
+      postsMatched: matched,
+      unmatchedPosts: success - matched,
       errors: failedRowData.map((f) => `第${f.rowIndex}行: ${f.error}`),
     };
   },
@@ -307,18 +357,36 @@ export const xiaodouyaConnector = {
   },
 
   /** 创建作品指标快照（T+1 基线；V4 用 parseNumber 支持 万/千分位） */
-  async createPostSnapshot(postId: string, publicationId: string | null, row: Record<string, string>, viewsCol: string | null, likesCol: string | null, commentsCol: string | null, sharesCol: string | null, savesCol: string | null) {
-    const snapshot = await metricsRepository.createPostSnapshot({
-      externalPostId: postId,
-      publicationId,
-      capturedAt: new Date(),
-      views: parseNumber(viewsCol ? row[viewsCol] : undefined) ?? 0,
-      likes: parseNumber(likesCol ? row[likesCol] : undefined) ?? 0,
-      comments: parseNumber(commentsCol ? row[commentsCol] : undefined) ?? 0,
-      shares: parseNumber(sharesCol ? row[sharesCol] : undefined) ?? 0,
-      saves: parseNumber(savesCol ? row[savesCol] : undefined) ?? 0,
-      rawMetrics: { source: "xiaodouya_csv", row },
-    });
+  /**
+   * B-1：作品快照（幂等 upsert：external_post_id + captured_at + data_source）。
+   * 扩展指标：阅读/曝光/完播率/主页访问（标准列）+ 全行原始数据（rawMetrics）。
+   */
+  async createPostSnapshot(input: {
+    postId: string;
+    publicationId: string | null;
+    row: Record<string, string>;
+    cols: { viewsCol: string | null; likesCol: string | null; commentsCol: string | null; sharesCol: string | null; savesCol: string | null; readsCol: string | null; impressionsCol: string | null; completionCol: string | null; profileVisitsCol: string | null };
+    capturedAt: Date;
+    dataSource: string;
+  }) {
+    const { row, cols } = input;
+    const completionRaw = cols.completionCol ? row[cols.completionCol] : undefined;
+    const snapshot = await metricsRepository.upsertPostSnapshot({
+      externalPostId: input.postId,
+      publicationId: input.publicationId,
+      capturedAt: input.capturedAt,
+      views: parseNumber(cols.viewsCol ? row[cols.viewsCol] : undefined) ?? 0,
+      likes: parseNumber(cols.likesCol ? row[cols.likesCol] : undefined) ?? 0,
+      comments: parseNumber(cols.commentsCol ? row[cols.commentsCol] : undefined) ?? 0,
+      shares: parseNumber(cols.sharesCol ? row[cols.sharesCol] : undefined) ?? 0,
+      saves: parseNumber(cols.savesCol ? row[cols.savesCol] : undefined) ?? 0,
+      reads: parseNumber(cols.readsCol ? row[cols.readsCol] : undefined) ?? 0,
+      impressions: parseNumber(cols.impressionsCol ? row[cols.impressionsCol] : undefined) ?? 0,
+      profileVisits: parseNumber(cols.profileVisitsCol ? row[cols.profileVisitsCol] : undefined) ?? 0,
+      completionRate: completionRaw && parseNumber(completionRaw) !== undefined ? String(parseNumber(completionRaw)) : null,
+      dataSource: input.dataSource,
+      rawMetrics: { source: input.dataSource === "manual" ? "manual_csv" : "xiaodouya_csv", row },
+    } as never);
     return snapshot;
   },
 };

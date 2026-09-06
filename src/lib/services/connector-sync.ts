@@ -1,6 +1,6 @@
 import { connectorRepository, metricsRepository, socialAccountRepository } from "@/lib/repositories";
 import { xiaodouyaConnector } from "@/lib/connectors/xiaodouya";
-import { parseCsv, parseNumber } from "@/lib/connectors/csv";
+import { parseCsv, parseNumber, parseDateLocal, DATE_COLUMN_ALIASES } from "@/lib/connectors/csv";
 import { notificationService } from "@/lib/services/notification";
 import { auditRepository } from "@/lib/repositories";
 import { db } from "@/lib/db";
@@ -183,7 +183,7 @@ export const connectorSyncService = {
    * connector_accounts 映射；无 external_account_id 时标记 unmapped。
    * V4：重复文件检测（fileHash）/ 行级错误结构化落库 / 历史导入标记。
    */
-  async importAccountsCsv(csvText: string, fileName: string, opts: { historicalImport?: boolean; fileHash?: string; encoding?: "utf8" | "gbk" } = {}) {
+  async importAccountsCsv(csvText: string, fileName: string, opts: { historicalImport?: boolean; fileHash?: string; encoding?: "utf8" | "gbk"; dataSource?: "manual" | "xiaodouya_import" | "historical_import" } = {}) {
     const connector = await xiaodouyaConnector.ensureConnector();
     const { headers, rows } = parseCsv(csvText);
     const historical = opts.historicalImport ?? false;
@@ -201,7 +201,7 @@ export const connectorSyncService = {
           after: { fileName, duplicate: true, originalBatch: dup.id },
           notes: `重复账号文件跳过（已有批次 ${dup.id.slice(0, 8)}）`,
         });
-        return { batchId: dup.id, totalRows: rows.length, created: 0, updated: 0, failed: 0, errors: [], duplicate: true };
+        return { batchId: dup.id, totalRows: rows.length, created: 0, updated: 0, failed: 0, accountSnapshots: 0, accountSnapshotsUpdated: 0, errors: [], duplicate: true };
       }
     }
 
@@ -214,10 +214,19 @@ export const connectorSyncService = {
     const platformCol = col(["平台", "platform"]);
     const extIdCol = col(["抖音号", "账号ID", "external_account_id"]);
     const followersCol = col(["粉丝数", "followers"]);
+    // B-1：日期列（→ captured_at）+ 扩展指标列（标准字段）
+    const capturedCol = col(DATE_COLUMN_ALIASES);
+    const newFollowersCol = col(["新增粉丝", "new_followers", "涨粉"]);
+    const profileVisitsCol = col(["主页访问", "主页访问量", "profile_visits"]);
+    const impressionsCol = col(["曝光量", "曝光", "impressions"]);
+    const viewsCol = col(["播放量", "播放", "views"]);
+    const engagementsCol = col(["互动量", "互动", "engagements"]);
 
     let created = 0;
     let updated = 0;
     let failed = 0;
+    let accountSnapshots = 0;
+    let accountSnapshotsUpdated = 0;
     const failedRowData: { rowIndex: number; row: Record<string, string>; error: string }[] = [];
     const platformMap: Record<string, string> = { 抖音: "douyin", 微信: "wechat", 公众号: "wechat", 小红书: "xiaohongshu", 视频号: "wechat_video", 快手: "kuaishou", B站: "bilibili", 哔哩哔哩: "bilibili", 其他: "other" };
 
@@ -244,19 +253,31 @@ export const connectorSyncService = {
           created++;
         }
 
-        // 账号指标快照（如果有粉丝数）
+        // 账号指标快照（B-1：日期列做 captured_at；幂等 upsert；扩展标准字段）
         if (followersCol && row[followersCol]) {
           const num = parseNumber(row[followersCol]);
           if (num !== undefined) {
             const accRow = await db.select().from(socialAccounts).where(sqlNameMatch(accountName)).limit(1);
             if (accRow[0]) {
-              await metricsRepository.createAccountSnapshot({
+              // 日期列校验：有值但解析失败 → 行级错误（不静默用当前时间）
+              const capturedAt = capturedCol ? parseDateLocal(row[capturedCol]) : null;
+              if (capturedCol && row[capturedCol] && !capturedAt) {
+                throw new Error(`列[${capturedCol}] 值[${row[capturedCol]}] 无法解析为日期`);
+              }
+              const snap = await metricsRepository.upsertAccountSnapshot({
                 socialAccountId: accRow[0].id,
-                capturedAt: new Date(),
+                capturedAt: capturedAt ?? new Date(),
                 followers: num,
-                newFollowers: 0,
-                rawMetrics: { source: "xiaodouya_csv_accounts", row, encoding: opts.encoding ?? null },
-              });
+                newFollowers: (newFollowersCol ? parseNumber(row[newFollowersCol]) : undefined) ?? 0,
+                profileVisits: (profileVisitsCol ? parseNumber(row[profileVisitsCol]) : undefined) ?? 0,
+                impressions: (impressionsCol ? parseNumber(row[impressionsCol]) : undefined) ?? 0,
+                views: (viewsCol ? parseNumber(row[viewsCol]) : undefined) ?? 0,
+                engagements: (engagementsCol ? parseNumber(row[engagementsCol]) : undefined) ?? 0,
+                dataSource: opts.dataSource ?? "xiaodouya_import",
+                rawMetrics: { source: (opts.dataSource ?? "xiaodouya_import") === "manual" ? "manual_csv_accounts" : "xiaodouya_csv_accounts", row, encoding: opts.encoding ?? null },
+              } as never);
+              if (snap.status === "created") accountSnapshots++;
+              else accountSnapshotsUpdated++;
             }
           }
         }
@@ -289,7 +310,7 @@ export const connectorSyncService = {
         severity: "warning",
       });
     }
-    return { batchId: batch.id, totalRows: rows.length, created, updated, failed, errors: failedRowData.map((f) => `第${f.rowIndex}行: ${f.error}`), duplicate: false };
+    return { batchId: batch.id, totalRows: rows.length, created, updated, failed, accountSnapshots, accountSnapshotsUpdated, errors: failedRowData.map((f) => `第${f.rowIndex}行: ${f.error}`), duplicate: false };
   },
 
   /** V4：失败行重试（Retry Failed Rows）——按批次读回 failed_row_data 重新导入。

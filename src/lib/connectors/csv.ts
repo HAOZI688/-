@@ -127,14 +127,17 @@ export async function readCsvFile(file: File): Promise<{ text: string; encoding:
 }
 
 /**
- * 数值解析：容忍千分位、中文单位（万/亿）、k/m 后缀。
- * "1,234" → 1234；"1.2万" → 12000；"3亿" → 300000000；"2.5k" → 2500
+ * 数值解析：容忍千分位、中文单位（万/亿）、k/m 后缀、百分比、占位符。
+ * "1,234" → 1234；"1.2万" → 12000；"3亿" → 300000000；"2.5k" → 2500；
+ * "8.6%" → 8.6（百分比数值本身，raw 保留原值）；"-" / "—" / "" → undefined（占位，不算错误）
  */
 export function parseNumber(v: string | undefined): number | undefined {
-  if (v === undefined || v === "") return undefined;
-  const s = String(v).trim().replace(/,/g, "");
-  if (!s) return undefined;
-  const m = s.match(/^(-?\d+(?:\.\d+)?)([万亿km]?)$/i);
+  if (v === undefined) return undefined;
+  const raw = String(v).trim();
+  if (!raw || raw === "-" || raw === "—" || raw === "/" || raw === "N/A") return undefined;
+  const s = raw.replace(/,/g, "");
+  if (s === "") return undefined;
+  const m = s.match(/^(-?\d+(?:\.\d+)?)([万亿km%]?)$/i);
   if (!m) return undefined;
   const base = Number(m[1]);
   if (Number.isNaN(base)) return undefined;
@@ -143,6 +146,7 @@ export function parseNumber(v: string | undefined): number | undefined {
   if (unit === "亿") return Math.round(base * 100000000);
   if (unit === "k") return Math.round(base * 1000);
   if (unit === "m") return Math.round(base * 1000000);
+  if (unit === "%") return base; // 百分比保留数值本身（如完播率 8.6% → 8.6）
   return Math.round(base);
 }
 
@@ -178,4 +182,31 @@ export function parseDate(v: string | undefined): Date | null {
   const d = new Date(normalized);
   if (!Number.isNaN(d.getTime())) return d;
   return null;
+}
+
+/** 日期列的常见表头（抄数 CSV） */
+export const DATE_COLUMN_ALIASES = ["日期", "统计日期", "数据日期", "date", "captured_at", "snapshot_date", "capturedat"];
+
+/**
+ * B-1 抄数管道专用：把 CSV 日期列解析为**项目默认时区的稳定 timestamp**。
+ * - "2026-09-01" / "2026/9/1" → 本地时区当天 **12:00**（date-only 用正午：UTC 会话下 ::date 仍是同一天，
+ *   避免午夜时刻在 UTC/+08 两个会话时区下差一天；同一文件重复导入生成完全相同的时刻 → 幂等键稳定）
+ * - "2026-09-01 14:30" / "2026-09-01 14:30:00" → 本地时区该时刻
+ * - 其余格式回落 parseDate（Excel 序列号 / Unix / 中文日期）
+ * 不用 new Date("2026-09-01")（会被解析为 UTC，服务器非 +08:00 时日期错一天）。
+ */
+export function parseDateLocal(v: string | undefined): Date | null {
+  if (v === undefined) return null;
+  const s = String(v).trim();
+  if (!s || s === "-" || s === "—") return null;
+  const m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (m) {
+    const [, y, mo, d, h = "12", mi = "0", sec = "0"] = m;
+    // 范围校验：JS Date 会把 2026-13-99 静默进位成合法日期，必须显式拒绝
+    const mm = Number(mo), dd = Number(d);
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+    const dt = new Date(Number(y), mm - 1, dd, Number(h), Number(mi), Number(sec));
+    return Number.isNaN(dt.getTime()) ? null : dt;
+  }
+  return parseDate(s);
 }

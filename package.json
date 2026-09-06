@@ -10,7 +10,9 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed": "tsx src/lib/db/seed.ts",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "data:import-manual": "tsx scripts/import-manual.mts",
+    "data:import-manual-all": "tsx scripts/import-manual.mts --all"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

@@ -188,7 +188,7 @@ export const trendRadarService = {
       .select({ run: workflowRuns, topic: topics })
       .from(workflowRuns)
       .leftJoin(topics, sql`${workflowRuns.topicId} = ${topics.id}`)
-      .where(sql`${workflowRuns.workflowType} = 'ai_weekly' and ${workflowRuns.createdAt} >= ${since}`)
+      .where(sql`${workflowRuns.workflowType} = 'ai_weekly' and ${workflowRuns.createdAt} >= ${since.toISOString()}`)
       .orderBy(sql`${workflowRuns.createdAt} desc`)
       .limit(20);
     for (const r of weeklyRuns) {
@@ -215,7 +215,7 @@ export const trendRadarService = {
     }
 
     // 5) Social Data：高表现外部作品（social_data 来源）
-    const hotPosts = await db.select().from(externalPosts).where(sql`${externalPosts.publishedAt} >= ${since}`).limit(200);
+    const hotPosts = await db.select().from(externalPosts).where(sql`${externalPosts.publishedAt} >= ${since.toISOString()}`).limit(200);
     const postIds = hotPosts.map((p) => p.id);
     const postViews = new Map<string, number>();
     if (postIds.length) {

@@ -76,8 +76,9 @@ export const attributionRepository = {
       .where(
         and(
           eq(attributionResults.topicId, topicId),
-          periodStart ? sql`${attributionRuns.periodStart} >= ${periodStart}` : undefined,
-          periodEnd ? sql`${attributionRuns.periodEnd} <= ${periodEnd}` : undefined,
+          // B-1 修复：裸 sql 模板绑定 Date 在 postgres.js 下参数序列化失败 → 显式转 ISO 字符串
+          periodStart ? sql`${attributionRuns.periodStart} >= ${periodStart.toISOString()}` : undefined,
+          periodEnd ? sql`${attributionRuns.periodEnd} <= ${periodEnd.toISOString()}` : undefined,
           sql`${attributionResults.attributionType} != 'unattributed'`,
         ),
       );
