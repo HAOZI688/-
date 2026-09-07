@@ -1,0 +1,1 @@
+ALTER TYPE "public"."weekly_plan_item_status" ADD VALUE 'needs_review';

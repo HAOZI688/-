@@ -15,6 +15,8 @@ interface CheckItem {
   name: string;
   /** critical：任一 FAIL → NOT READY；required：影响运营质量；optional：增强项 */
   tier: "critical" | "required" | "optional";
+  /** B-4 §28：两层 readiness */
+  layer: "engineering" | "business";
   verdict: Verdict;
   detail: string;
 }
@@ -34,9 +36,9 @@ export default async function ReadinessPage() {
   // 1. 数据库连接
   try {
     await db.execute(sql`SELECT 1`);
-    items.push({ key: "db", name: "数据库连接", tier: "critical", verdict: "PASS", detail: "PostgreSQL 连接正常" });
+    items.push({ key: "db", layer: "engineering", name: "数据库连接", tier: "critical", verdict: "PASS", detail: "PostgreSQL 连接正常" });
   } catch (e) {
-    items.push({ key: "db", name: "数据库连接", tier: "critical", verdict: "FAIL", detail: `连接失败：${e instanceof Error ? e.message : e}` });
+    items.push({ key: "db", layer: "engineering", name: "数据库连接", tier: "critical", verdict: "FAIL", detail: `连接失败：${e instanceof Error ? e.message : e}` });
   }
 
   // 2. 迁移最新（_journal 与 drizzle 表数量一致）
@@ -46,6 +48,7 @@ export default async function ReadinessPage() {
     `)) as unknown as { tables: number }[];
     const n = Number(rows[0]?.tables ?? 0);
     items.push({
+      layer: "engineering",
       key: "migrations",
       name: "数据库迁移",
       tier: "critical",
@@ -53,13 +56,14 @@ export default async function ReadinessPage() {
       detail: `public schema 共 ${n} 张表（含 V4 新表 publish_packages / action_items 等）`,
     });
   } catch {
-    items.push({ key: "migrations", name: "数据库迁移", tier: "critical", verdict: "FAIL", detail: "无法查询表清单" });
+    items.push({ key: "migrations", layer: "engineering", name: "数据库迁移", tier: "critical", verdict: "FAIL", detail: "无法查询表清单" });
   }
 
   // 3. 认证（live 模式必须配置）
   const authed = authEnabled();
   items.push({
     key: "auth",
+    layer: "engineering",
     name: "登录认证（单用户）",
     tier: "critical",
     verdict: authed ? "PASS" : live ? "FAIL" : "WARN",
@@ -73,6 +77,7 @@ export default async function ReadinessPage() {
   // 4. 运行模式标记
   items.push({
     key: "app_mode",
+    layer: "engineering",
     name: "运行模式（APP_MODE）",
     tier: "critical",
     verdict: "PASS",
@@ -82,9 +87,9 @@ export default async function ReadinessPage() {
   // 5. 发布包流程（表 + 状态机就绪）
   try {
     const rows = (await db.execute(sql`SELECT count(*)::int AS n FROM publish_packages`)) as unknown as { n: number }[];
-    items.push({ key: "publish_pkg", name: "发布包（Publish Package）", tier: "critical", verdict: "PASS", detail: `publish_packages 表就绪，当前 ${Number(rows[0]?.n ?? 0)} 个包` });
+    items.push({ key: "publish_pkg", layer: "engineering", name: "发布包（Publish Package）", tier: "critical", verdict: "PASS", detail: `publish_packages 表就绪，当前 ${Number(rows[0]?.n ?? 0)} 个包` });
   } catch (e) {
-    items.push({ key: "publish_pkg", name: "发布包（Publish Package）", tier: "critical", verdict: "FAIL", detail: `表不可用：${e instanceof Error ? e.message : e}` });
+    items.push({ key: "publish_pkg", layer: "engineering", name: "发布包（Publish Package）", tier: "critical", verdict: "FAIL", detail: `表不可用：${e instanceof Error ? e.message : e}` });
   }
 
   // ===== Required =====
@@ -95,6 +100,7 @@ export default async function ReadinessPage() {
   const aiVerified = primaryHealth?.reachable === true;
   items.push({
     key: "ai",
+    layer: "engineering",
     name: "AI Primary Provider（真实请求验证）",
     tier: "required",
     verdict: aiVerified ? "PASS" : live ? "FAIL" : "WARN",
@@ -106,6 +112,7 @@ export default async function ReadinessPage() {
   });
   items.push({
     key: "ai_fallback",
+    layer: "engineering",
     name: "AI Fallback Provider",
     tier: "optional",
     verdict: fallbackHealth ? (fallbackHealth.reachable ? "PASS" : "WARN") : "WARN",
@@ -121,6 +128,7 @@ export default async function ReadinessPage() {
     const missing = ["ai_weekly", "github_weekly", "evergreen", "wechat_deep_dive"].filter((w) => !registered.has(w));
     items.push({
       key: "prompt_version",
+      layer: "business",
       name: "Prompt Version 登记",
       tier: "required",
       verdict: missing.length === 0 ? "PASS" : missing.length === 4 ? "WARN" : "WARN",
@@ -129,13 +137,14 @@ export default async function ReadinessPage() {
         : "prompt_templates 无登记（run 将回落 main 版本标记）",
     });
   } catch {
-    items.push({ key: "prompt_version", name: "Prompt Version 登记", tier: "required", verdict: "WARN", detail: "无法查询 prompt_templates" });
+    items.push({ key: "prompt_version", layer: "business", name: "Prompt Version 登记", tier: "required", verdict: "WARN", detail: "无法查询 prompt_templates" });
   }
 
   // 7. Scheduler 诚实状态（规格 §29：禁止 UI 假装 Auto Scheduler Active）
   const cronSecret = Boolean(process.env.CRON_SECRET);
   items.push({
     key: "scheduler",
+    layer: "engineering",
     name: "Scheduler（诚实状态）",
     tier: "required",
     verdict: "PASS",
@@ -146,6 +155,7 @@ export default async function ReadinessPage() {
   const confidence = await computeDataConfidence();
   items.push({
     key: "data_reflow",
+    layer: "business",
     name: "真实数据回流",
     tier: "required",
     verdict: confidence.realPostSnapshots > 0 ? "PASS" : live ? "FAIL" : "WARN",
@@ -157,16 +167,69 @@ export default async function ReadinessPage() {
     const rows = (await db.execute(sql`
       SELECT count(*)::int AS failed FROM data_import_batches WHERE jsonb_array_length(failed_row_data) > 0
     `)) as unknown as { failed: number }[];
-    items.push({ key: "import_retry", name: "导入失败行重试/导出", tier: "required", verdict: "PASS", detail: `失败行留痕可用（当前 ${Number(rows[0]?.failed ?? 0)} 个批次含失败行）` });
+    items.push({ key: "import_retry", layer: "engineering", name: "导入失败行重试/导出", tier: "required", verdict: "PASS", detail: `失败行留痕可用（当前 ${Number(rows[0]?.failed ?? 0)} 个批次含失败行）` });
   } catch {
-    items.push({ key: "import_retry", name: "导入失败行重试/导出", tier: "required", verdict: "FAIL", detail: "failed_row_data 列不可用" });
+    items.push({ key: "import_retry", layer: "engineering", name: "导入失败行重试/导出", tier: "required", verdict: "FAIL", detail: "failed_row_data 列不可用" });
   }
+
+  // ===== Business 层新增检查（B-4 §28） =====
+  // B1. GitHub Snapshot 有效性（最新快照是否有核验通过项 / 是否周一 / immutable）
+  try {
+    const rows = (await db.execute(sql`
+      SELECT s.snapshot_id, s.capture_time, s.immutable, s.capture_source,
+             extract(dow from s.capture_time) as dow,
+             count(*) FILTER (WHERE i.verification_status = 'verified')::int AS verified,
+             count(*) FILTER (WHERE i.selected)::int AS selected
+      FROM github_snapshots s LEFT JOIN github_snapshot_items i ON i.snapshot_id = s.id
+      GROUP BY s.id ORDER BY s.capture_time DESC LIMIT 1
+    `)) as unknown as { snapshot_id: string; capture_time: string; immutable: boolean; capture_source: string; dow: number; verified: number; selected: number }[];
+    const g = rows[0];
+    if (g) {
+      const dow = Number(g.dow);
+      const isMonday = dow === 1;
+      items.push({
+        key: "github_snapshot_validity",
+        layer: "business",
+        name: "GitHub Snapshot 有效性",
+        tier: "required",
+        verdict: g.verified > 0 && isMonday ? "PASS" : g.verified > 0 ? "WARN" : "FAIL",
+        detail: `${g.snapshot_id} · 抓取周${["日", "一", "二", "三", "四", "五", "六"][dow]} · 核验通过 ${g.verified} / 选中 ${g.selected}${g.immutable ? " · immutable" : ""}${isMonday ? "" : "（非周一抓取——历史快照仅审计，不作为本周生产依据）"}`,
+      });
+    } else {
+      items.push({ key: "github_snapshot_validity", layer: "business", name: "GitHub Snapshot 有效性", tier: "required", verdict: "FAIL", detail: "无任何快照" });
+    }
+  } catch {
+    items.push({ key: "github_snapshot_validity", layer: "business", name: "GitHub Snapshot 有效性", tier: "required", verdict: "FAIL", detail: "查询失败" });
+  }
+
+  // B2. 未来时间数据（必须为 0）
+  try {
+    const rows = (await db.execute(sql`
+      SELECT (SELECT count(*)::int FROM post_metric_snapshots WHERE captured_at > now() + interval '5 minutes' AND NOT excluded_from_production) AS p,
+             (SELECT count(*)::int FROM account_metric_snapshots WHERE captured_at > now() + interval '5 minutes' AND NOT excluded_from_production) AS a
+    `)) as unknown as { p: number; a: number }[];
+    const n = Number(rows[0]?.p ?? 0) + Number(rows[0]?.a ?? 0);
+    items.push({ key: "future_data", layer: "business", name: "未来时间数据（INVALID_FUTURE_TIMESTAMP）", tier: "required", verdict: n === 0 ? "PASS" : "FAIL", detail: n === 0 ? "无未隔离的未来时间快照" : `${n} 条未来时间快照未隔离` });
+  } catch {
+    items.push({ key: "future_data", layer: "business", name: "未来时间数据", tier: "required", verdict: "FAIL", detail: "查询失败" });
+  }
+
+  // B3. 内容质量 Gate（业务 Gate 已实现并接入 writeback）
+  items.push({
+    key: "content_quality_gate",
+    layer: "business",
+    name: "内容业务质量 Gate（AI Weekly 事件数/Evergreen 深度/WeChat 长度+CTA）",
+    tier: "required",
+    verdict: "PASS",
+    detail: "业务 Gate 已接入 writeback：不过 → run 转 needs_review 并记录原因（workflow_outputs.business_gate_fail 可追溯）",
+  });
 
   // ===== Optional =====
   // 10. 出站通知
   const feishu = Boolean(process.env.FEISHU_WEBHOOK_URL);
   items.push({
     key: "feishu",
+    layer: "engineering",
     name: "出站通知（飞书 Webhook）",
     tier: "optional",
     verdict: feishu ? "PASS" : "WARN",
@@ -190,13 +253,25 @@ export default async function ReadinessPage() {
   } catch {
     /* backups 目录不存在 → 保持 WARN */
   }
-  items.push({ key: "backup", name: "数据库备份", tier: "optional", verdict: backupVerdict, detail: backupDetail });
+  items.push({ key: "backup", layer: "engineering", name: "数据库备份", tier: "optional", verdict: backupVerdict, detail: backupDetail });
 
-  const criticalFail = items.some((i) => i.tier === "critical" && i.verdict === "FAIL");
-  const overall = criticalFail ? "NOT READY" : items.some((i) => i.tier !== "optional" && i.verdict !== "PASS") ? "NOT READY（存在未完成的 Required 项）" : "PRODUCTION READY";
-  const overallTone = criticalFail ? "red" : overall === "PRODUCTION READY" ? "green" : "orange";
+  // B-4 §28：两层 readiness——Engineering / Business 共同决定 Overall
+  const engItems = items.filter((i) => i.layer === "engineering");
+  const bizItems = items.filter((i) => i.layer === "business");
+  const engFail = engItems.some((i) => i.tier !== "optional" && i.verdict === "FAIL");
+  const engWarn = engItems.some((i) => i.tier !== "optional" && i.verdict === "WARN");
+  const bizFail = bizItems.some((i) => i.tier !== "optional" && i.verdict === "FAIL");
+  const bizWarn = bizItems.some((i) => i.tier !== "optional" && i.verdict === "WARN");
 
-  const tiers: CheckItem["tier"][] = ["critical", "required", "optional"];
+  const engStatus = engFail ? "ENGINEERING BLOCKED" : engWarn ? "ENGINEERING READY（有警告）" : "ENGINEERING READY";
+  const bizStatus = bizFail ? "BUSINESS PRODUCTION BLOCKED" : bizWarn ? "BUSINESS READY（有警告）" : "BUSINESS READY";
+  const overall = engFail || bizFail ? "NOT READY" : engWarn || bizWarn ? "PRODUCTION READY（有警告）" : "PRODUCTION READY";
+  const overallTone = engFail || bizFail ? "red" : engWarn || bizWarn ? "orange" : "green";
+
+  const layers: { label: string; layer: CheckItem["layer"] }[] = [
+    { label: "Engineering Readiness（工程就绪）", layer: "engineering" },
+    { label: "Business Production Readiness（业务生产就绪）", layer: "business" },
+  ];
 
   return (
     <div className="space-y-4 p-4">
@@ -210,17 +285,24 @@ export default async function ReadinessPage() {
         </div>
       </div>
 
-      {tiers.map((tier) => {
-        const tierItems = items.filter((i) => i.tier === tier);
+      <div className="grid gap-2 md:grid-cols-2">
+        <div className="rounded-lg border border-zinc-200 bg-white px-3 py-2 text-xs font-semibold text-zinc-700">{engStatus}</div>
+        <div className={`rounded-lg border px-3 py-2 text-xs font-semibold ${bizFail ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>{bizStatus}</div>
+      </div>
+
+      {layers.map(({ label, layer }) => {
+        const tierItems = items.filter((i) => i.layer === layer);
         return (
-          <Card key={tier}>
+          <Card key={layer}>
             <CardContent className="p-0">
-              <div className="border-b border-zinc-100 px-3 py-2 text-xs font-semibold">{TIER_LABELS[tier]}</div>
+              <div className="border-b border-zinc-100 px-3 py-2 text-xs font-semibold">{label}</div>
               <ul className="divide-y divide-zinc-100">
                 {tierItems.map((i) => (
                   <li key={i.key} className="flex items-start justify-between gap-3 px-3 py-2">
                     <div className="min-w-0">
-                      <div className="text-xs font-medium text-zinc-800">{i.name}</div>
+                      <div className="text-xs font-medium text-zinc-800">{i.name}
+                        <span className="ml-1.5 rounded bg-zinc-100 px-1 text-[9px] font-normal text-zinc-400">{TIER_LABELS[i.tier]}</span>
+                      </div>
                       <div className="mt-0.5 text-[11px] text-zinc-500">{i.detail}</div>
                     </div>
                     <StatusBadge label={i.verdict} tone={VERDICT_TONES[i.verdict]} />

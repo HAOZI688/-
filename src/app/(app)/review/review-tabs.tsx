@@ -26,14 +26,24 @@ import {
 import type { WeeklyPlan, WeeklyPlanItem } from "@/lib/db/schema";
 import type { ContentAsset, Publication, Topic } from "@/lib/db/schema";
 
+interface ReviewDetail {
+  asset: ContentAsset;
+  topic: Topic;
+  contentLength: number;
+  versionCount: number;
+  humanEdited: boolean;
+  businessGateReasons: string[];
+}
+
 interface Props {
   latestPlan: WeeklyPlan | null;
   pendingItems: WeeklyPlanItem[];
   inReviewAssets: { asset: ContentAsset; topic: Topic }[];
   confirmPubs: { pub: Publication; topic: Topic }[];
+  reviewDetails?: ReviewDetail[];
 }
 
-export function ReviewTabs({ latestPlan, pendingItems, inReviewAssets, confirmPubs }: Props) {
+export function ReviewTabs({ latestPlan, pendingItems, inReviewAssets, confirmPubs, reviewDetails = [] }: Props) {
   const [tab, setTab] = React.useState("topics");
 
   return (
@@ -108,29 +118,52 @@ export function ReviewTabs({ latestPlan, pendingItems, inReviewAssets, confirmPu
               <p className="p-6 text-center text-xs text-zinc-400">没有待审核的内容资产（工作流产出的 in_review 内容会出现在这里）。</p>
             ) : (
               <ul className="divide-y divide-zinc-100">
-                {inReviewAssets.map(({ asset, topic }) => (
-                  <li key={asset.id} className="flex items-center justify-between gap-3 px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <Link href={`/content/${topic.id}`} className="truncate text-[13px] font-medium hover:text-blue-600">
-                          {asset.title}
-                        </Link>
-                        <StatusBadge label={ASSET_TYPE_LABELS[asset.assetType] ?? asset.assetType} tone="default" />
+                {inReviewAssets.map(({ asset, topic }) => {
+                  const detail = reviewDetails.find((d) => d.asset.id === asset.id);
+                  return (
+                    <li key={asset.id} className="px-3 py-3">
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <Link href={`/content/${topic.id}`} className="truncate text-[13px] font-medium hover:text-blue-600">
+                              {asset.title}
+                            </Link>
+                            <StatusBadge label={ASSET_TYPE_LABELS[asset.assetType] ?? asset.assetType} tone="default" />
+                          </div>
+                          <div className="mt-0.5 text-[10px] text-zinc-400">
+                            {topic.title} · {PLATFORM_LABELS[asset.platform ?? ""] ?? asset.platform ?? "—"} · v{asset.version} · {detail?.contentLength ?? 0} 字 · {detail?.versionCount ?? 0} 个版本
+                            {detail?.humanEdited ? " · 含人工编辑" : ""}
+                          </div>
+                        </div>
+                        <div className="flex shrink-0 gap-1.5">
+                          <form action={revisionAssetAction.bind(null, asset.id)}>
+                            <Button variant="outline" size="sm">打回</Button>
+                          </form>
+                          <form action={approveAssetAction.bind(null, asset.id)}>
+                            <Button size="sm">通过</Button>
+                          </form>
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-[10px] text-zinc-400">
-                        {topic.title} · {PLATFORM_LABELS[asset.platform ?? ""] ?? asset.platform ?? "—"} · v{asset.version}
-                      </div>
-                    </div>
-                    <div className="flex shrink-0 gap-1.5">
-                      <form action={revisionAssetAction.bind(null, asset.id)}>
-                        <Button variant="outline" size="sm">打回</Button>
-                      </form>
-                      <form action={approveAssetAction.bind(null, asset.id)}>
-                        <Button size="sm">通过</Button>
-                      </form>
-                    </div>
-                  </li>
-                ))}
+                      {/* B-4 §17：审核者必须能看到真实内容与风险 */}
+                      {detail && (
+                        <div className="mt-2 space-y-1.5">
+                          {detail.businessGateReasons.length > 0 && (
+                            <div className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] text-amber-700">
+                              ⚠ 业务质量 Gate 未通过：{detail.businessGateReasons.join("；")}
+                            </div>
+                          )}
+                          <details className="rounded border border-zinc-200 bg-zinc-50/60">
+                            <summary className="cursor-pointer px-2 py-1 text-[11px] text-zinc-600">查看完整正文（{detail.contentLength} 字）</summary>
+                            <div className="max-h-72 overflow-y-auto whitespace-pre-wrap px-3 py-2 text-[11px] leading-relaxed text-zinc-700">
+                              {asset.content ?? "（无正文）"}
+                            </div>
+                          </details>
+                          {asset.cta && <div className="text-[10px] text-blue-700">CTA：{asset.cta}</div>}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </CardContent>

@@ -45,9 +45,16 @@ export const actionItemsService = {
     const existingKeys = new Set(existing.map((e) => `${e.type}:${e.entityType ?? ""}:${e.entityId ?? ""}`));
 
     let created = 0;
-    // 插入缺失的
+    // 插入缺失的；已存在的刷新文案（title/description 可能因错误友好化等变化），不动状态
     for (const d of desired) {
-      if (existingKeys.has(`${d.type}:${d.entityType}:${d.entityId}`)) continue;
+      const key = `${d.type}:${d.entityType}:${d.entityId}`;
+      if (existingKeys.has(key)) {
+        const match = existing.find((e) => `${e.type}:${e.entityType ?? ""}:${e.entityId ?? ""}` === key);
+        if (match && (match.title !== d.title || match.description !== d.description || match.targetUrl !== d.targetUrl)) {
+          await db.update(actionItems).set({ title: d.title, description: d.description, targetUrl: d.targetUrl }).where(eq(actionItems.id, match.id));
+        }
+        continue;
+      }
       await db.insert(actionItems).values({
         type: d.type,
         priority: d.priority,
@@ -115,7 +122,13 @@ export const actionItemsService = {
             type: "workflow",
             priority: "P1",
             title: `${run.needsManual ? "AI 调用失败需人工介入" : "工作流失败，可重试"}`,
-            description: `${run.workflowType} 运行失败：${(run.error ?? "").slice(0, 80)}`,
+            description: (() => {
+          const raw = run.error ?? "";
+          const friendly = /Failed query|insert into|update "/i.test(raw)
+            ? "内部执行出错（详情见生产监控台），可重试。"
+            : raw.slice(0, 80);
+          return `${run.workflowType} 运行失败：${friendly}`;
+        })(),
             targetUrl: "/production",
             entityType: "workflow_runs",
             entityId: run.id,

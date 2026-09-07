@@ -31,6 +31,8 @@ const PLAN_STATUS_LABELS: Record<string, string> = {
   production: "生产中",
   completed: "已完成",
   cancelled: "已取消",
+  production_blocked: "生产阻塞（含失败项）",
+  needs_review: "产出待人工复核",
 };
 
 const PLAN_STATUS_TONES: Record<string, "orange" | "blue" | "green" | "default"> = {
@@ -41,7 +43,7 @@ const PLAN_STATUS_TONES: Record<string, "orange" | "blue" | "green" | "default">
   cancelled: "default",
 };
 
-const PRIORITY_OPTIONS = ["P0", "P1", "P2", "P3"];
+const PRIORITY_OPTIONS = ["P0", "P1", "P2"]; // B-4 §9：生产新数据禁 P3（历史 legacy 保留）
 const ROLE_OPTIONS = ["traffic", "cognition", "scenario", "product", "conversion"];
 const WORKFLOW_OPTIONS = ["ai_weekly", "github_weekly", "evergreen", "wechat_deep_dive"];
 

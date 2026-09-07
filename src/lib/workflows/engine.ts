@@ -315,6 +315,13 @@ async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteb
           topicId: completedRun.topicId,
           demo: Boolean(completedRun.output && typeof completedRun.output === "object" && (completedRun.output as { demo?: boolean }).demo),
         });
+        // B-4：业务质量 Gate 未通过 → run 转 needs_review（内容保留，人工处理）
+        if (writeback.businessGate && !writeback.businessGate.pass) {
+          await db
+            .update(workflowRuns)
+            .set({ status: "needs_review", output: { ...(completedRun.output as object), businessGate: writeback.businessGate.reasons, writebackDone: true }, completedAt: new Date() })
+            .where(eq(workflowRuns.id, runId));
+        }
         // V3：产出内容资产 → 通知进入审核队列（content_needs_review）
         if (writeback.contentAssets > 0) {
           const { notificationService } = await import("@/lib/services/notification");

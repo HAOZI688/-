@@ -20,6 +20,31 @@ export default async function ReviewPage() {
   const inReviewAssets = assets.filter((a) => a.asset.status === "in_review");
   const confirmPubs = pubs.filter((p) => p.pub.status === "planned" || p.pub.status === "ready");
 
+  // B-4 §17：Gate 2 审核详情——完整正文 / 业务 Gate 结果 / 版本数 / Topic
+  const reviewDetails = await Promise.all(
+    inReviewAssets.slice(0, 20).map(async ({ asset, topic }) => {
+      const [versions, runs] = await Promise.all([
+        contentRepository.listVersions(asset.id),
+        (async () => {
+          const { workflowRepository } = await import("@/lib/repositories");
+          const all = await workflowRepository.getRunsByTopic(asset.topicId);
+          return all.filter((r) => r.output && typeof r.output === "object" && (r.output as { businessGate?: unknown }).businessGate).slice(0, 1);
+        })(),
+      ]);
+      const gateReasons = runs[0]
+        ? ((runs[0].output as { businessGate?: string[] }).businessGate ?? [])
+        : [];
+      return {
+        asset,
+        topic,
+        contentLength: (asset.content ?? "").length,
+        versionCount: versions.length,
+        humanEdited: versions.some((v) => v.createdBy === "user"),
+        businessGateReasons: gateReasons,
+      };
+    }),
+  );
+
   return (
     <div className="space-y-4 p-4">
       <div>
@@ -34,6 +59,7 @@ export default async function ReviewPage() {
         pendingItems={pendingItems}
         inReviewAssets={inReviewAssets}
         confirmPubs={confirmPubs}
+        reviewDetails={reviewDetails}
       />
     </div>
   );

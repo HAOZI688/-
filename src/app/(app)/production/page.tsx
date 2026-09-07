@@ -18,6 +18,8 @@ const PLAN_STATUS_LABELS: Record<string, string> = {
   production: "生产中",
   completed: "已完成",
   cancelled: "已取消",
+  production_blocked: "生产阻塞（含失败项）",
+  needs_review: "产出待人工复核",
 };
 
 /**
@@ -276,18 +278,24 @@ export default async function ProductionPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {acceptance.map((a) => (
-                    <TableRow key={a.workflowType}>
-                      <TableCell className="text-xs font-medium">{WORKFLOW_TYPE_LABELS[a.workflowType] ?? a.workflowType}</TableCell>
-                      <TableCell className="text-right tabular-nums">{a.generated}</TableCell>
-                      <TableCell className="text-right tabular-nums text-emerald-600">{a.approvedDirectly}</TableCell>
-                      <TableCell className="text-right tabular-nums text-blue-600">{a.approvedAfterEdit}</TableCell>
-                      <TableCell className="text-right tabular-nums text-red-500">{a.rejected}</TableCell>
-                      <TableCell className="text-right tabular-nums font-medium">
-                        {a.acceptanceRate === null ? "—" : `${a.acceptanceRate.toFixed(0)}%`}
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {acceptance.map((a) => {
+                    const sample = a.approvedDirectly + a.approvedAfterEdit + a.rejected;
+                    const insufficient = sample < 5;
+                    return (
+                      <TableRow key={a.workflowType}>
+                        <TableCell className="text-xs font-medium">{WORKFLOW_TYPE_LABELS[a.workflowType] ?? a.workflowType}</TableCell>
+                        <TableCell className="text-right tabular-nums">{a.generated}</TableCell>
+                        <TableCell className="text-right tabular-nums text-emerald-600">{a.approvedDirectly}</TableCell>
+                        <TableCell className="text-right tabular-nums text-blue-600">{a.approvedAfterEdit}</TableCell>
+                        <TableCell className="text-right tabular-nums text-red-500">{a.rejected}</TableCell>
+                        <TableCell className="text-right tabular-nums font-medium">
+                          {insufficient ? (
+                            <span className="text-[10px] text-amber-600" title={`样本量 ${sample} < 5`}>INSUFFICIENT_SAMPLE</span>
+                          ) : a.acceptanceRate === null ? "—" : `${a.acceptanceRate.toFixed(0)}%`}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             )}

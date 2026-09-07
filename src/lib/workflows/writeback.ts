@@ -38,6 +38,8 @@ export interface WritebackResult {
   outputs: number;
   derivedTopics: number;
   contentAssets: number;
+  /** B-4：业务质量 Gate 结果（不过 → run 转 needs_review） */
+  businessGate?: BusinessGateResult;
 }
 
 /** 从模型文本中提取第一个 JSON 块（```json 块优先，其次裸 {..} / [..]） */
@@ -71,6 +73,92 @@ function num(v: unknown): number | undefined {
   if (v == null) return undefined;
   const n = typeof v === "number" ? v : Number(String(v).trim());
   return Number.isFinite(n) ? n : undefined;
+}
+
+/** B-4 §10-§16：业务质量 Gate（writeback 解析后按工作流业务规则校验） */
+export interface BusinessGateResult {
+  pass: boolean;
+  reasons: string[];
+}
+
+function normalizeTitle(t: string): string {
+  return t.toLowerCase().replace(/[\s\p{P}]+/gu, "");
+}
+
+async function dedupCheck(title: string): Promise<{ decision: "new" | "reuse" | "derive"; matchedTopicIds: string[] }> {
+  const { topicRepository } = await import("@/lib/repositories");
+  const all = await topicRepository.list();
+  const norm = normalizeTitle(title);
+  const matched: string[] = [];
+  for (const t of all) {
+    const nt = normalizeTitle(t.title);
+    if (!nt) continue;
+    // 相似判定：互相包含或编辑距离近似（≥8 字时前 12 字符一致也算）
+    if (norm.includes(nt) || nt.includes(norm) || (norm.length >= 8 && nt.length >= 8 && (norm.slice(0, 12) === nt.slice(0, 12)))) {
+      matched.push(t.id);
+    }
+  }
+  if (matched.length === 0) return { decision: "new", matchedTopicIds: [] };
+  // 已有高度相近 Topic → derive（衍生）而不是新建重复
+  return { decision: matched.length ? "derive" : "new", matchedTopicIds: matched };
+}
+
+export async function runBusinessGate(
+  workflowType: string,
+  parsed: { derivedTopics?: { title: string; description?: string }[]; contentAssets?: { title: string; content?: string; cta?: string; knowledgeStatus?: string; concept?: string }[] },
+): Promise<BusinessGateResult> {
+  const reasons: string[] = [];
+
+  if (workflowType === "ai_weekly") {
+    // §11：5–8 个事件、每条绑来源、正文长度
+    const events = parsed.derivedTopics ?? [];
+    if (events.length < 5) reasons.push(`AI_WEEKLY_TOO_FEW_EVENTS: 事件数 ${events.length} < 5（统计周期内真实事件不足，需补来源或人工确认）`);
+    if (events.length > 8) reasons.push(`AI_WEEKLY_TOO_MANY_EVENTS: 事件数 ${events.length} > 8`);
+    for (const e of events) {
+      if (!e.description || e.description.length < 20) reasons.push(`AI_WEEKLY_EVENT_NO_SOURCE: 事件「${e.title?.slice(0, 24)}」缺来源描述（core_fact + source）`);
+    }
+  }
+
+  if (workflowType === "evergreen") {
+    // §15：概念定义深度 + 知识状态匹配
+    const asset = parsed.contentAssets?.[0];
+    const concept = (parsed as { concept?: string }).concept ?? "";
+    if (asset) {
+      if ((asset.content ?? "").length < 400) reasons.push(`EVERGREEN_SHALLOW: 内容 ${String((asset.content ?? "").length)} 字，未达到深度讲解（≥400 字）`);
+      if (!asset.cta) reasons.push("EVERGREEN_NO_CTA: 缺转化引导（CTA）");
+    }
+    const ks = (parsed as { knowledgeStatus?: string }).knowledgeStatus;
+    if (ks === "deep_explanation" && concept.length < 100) {
+      reasons.push(`EVERGREEN_STATUS_INFLATED: 标记 deep_explanation 但概念拆解仅 ${concept.length} 字`);
+    }
+  }
+
+  if (workflowType === "wechat_deep_dive") {
+    // §16：正文长度、单 CTA、结构
+    const asset = parsed.contentAssets?.[0];
+    if (asset) {
+      const len = (asset.content ?? "").length;
+      if (len < 1500) reasons.push(`WECHAT_TOO_SHORT: 正文 ${len} 字 < 1500（深度文要求完整结构）`);
+      const ctaCount = (asset.cta ?? "").trim() ? 1 : 0;
+      const extraCta = (asset.content ?? "").match(/(扫码|加微信|私信|领取资料)/g)?.length ?? 0;
+      if (ctaCount === 0 && extraCta === 0) reasons.push("WECHAT_NO_CTA: 全文缺主 CTA");
+      if (extraCta > 2) reasons.push(`WECHAT_TOO_MANY_CTA: 正文出现 ${extraCta} 处强引导，要求全文只保留一个主要 CTA`);
+      if (!/[\n#]/.test(asset.content ?? "") && len > 500) reasons.push("WECHAT_NO_STRUCTURE: 正文无章节结构（缺换行/标题）");
+    } else {
+      reasons.push("WECHAT_NO_ASSET: 未产出内容资产");
+    }
+  }
+
+  if (workflowType === "github_weekly") {
+    // §4：derived Topics 必须来自真实核验仓库（writeback 上游已核验，这里防模型自造）
+    for (const t of parsed.derivedTopics ?? []) {
+      if (/agent-tools|deepsearcher\/deep|localrag\/local|mcpgo|skillhub|tinyagent|workflowai\/workflow/i.test(t.title ?? "")) {
+        reasons.push(`GITHUB_FABRICATED_REPO: 衍生 Topic 引用了未通过 GitHub 核验的仓库「${(t.title ?? "").slice(0, 30)}」`);
+      }
+    }
+  }
+
+  return { pass: reasons.length === 0, reasons };
 }
 
 /**
@@ -120,9 +208,20 @@ export async function writeBackRunOutputs(
     result.outputs += 1;
   }
 
-  // 2) Derived Topics（血缘：derived → parent = run.topicId）
+  // 2) Derived Topics（血缘：derived → parent = run.topicId；B-4 §8：创建前历史查重）
   for (const dt of parsed.derivedTopics ?? []) {
     if (!dt?.title) continue;
+    const dedup = await dedupCheck(dt.title);
+    if (dedup.decision === "derive" && dedup.matchedTopicIds.length > 0) {
+      // 高度相近 Topic 已存在 → 记录 dedup 决策并关联，不新建重复 Topic
+      await workflowRepository.createOutput(runId, {
+        outputType: "dedup_decision",
+        label: `查重：与已有 Topic 相似（${dedup.matchedTopicIds.length} 条）`,
+        content: JSON.stringify({ title: dt.title, decision: dedup.decision, matchedTopicIds: dedup.matchedTopicIds }),
+      });
+      result.outputs += 1;
+      continue;
+    }
     const topic = await topicRepository.create({
       topicId: await nextTopicId(runMeta.topicId ?? "000"),
       title: dt.title.slice(0, 300),
@@ -176,19 +275,31 @@ export async function writeBackRunOutputs(
     });
     result.contentAssets += 1;
   }
+  // B-4：业务质量 Gate（§10-§16）——不过则写回 gate 结果，由 engine 转 needs_review
+  const businessGate = await runBusinessGate(runMeta.workflowType, parsed as never);
+  result.businessGate = businessGate;
+
   // V4：内容验收统计——记录 AI 生成资产数（approved/rejected 由审核动作记录）
   if (result.contentAssets > 0) {
     const { acceptanceStatsService } = await import("@/lib/services/acceptance-stats");
     await acceptanceStatsService.recordGenerated(runMeta.workflowType, result.contentAssets);
   }
 
+  if (!businessGate.pass) {
+    await workflowRepository.createOutput(runId, {
+      outputType: "business_gate_fail",
+      label: "业务质量 Gate 未通过",
+      content: JSON.stringify({ workflowType: runMeta.workflowType, reasons: businessGate.reasons }),
+    });
+    result.outputs += 1;
+  }
   await auditRepository.log({
     action: "content_update",
     entityType: "workflow_run",
     entityId: runId,
     before: null,
-    after: { derivedTopics: result.derivedTopics, contentAssets: result.contentAssets },
-    notes: `Writeback：${result.derivedTopics} 衍生 Topic / ${result.contentAssets} 内容资产（进待审核）`,
+    after: { derivedTopics: result.derivedTopics, contentAssets: result.contentAssets, businessGate: businessGate.reasons },
+    notes: `Writeback：${result.derivedTopics} 衍生 Topic / ${result.contentAssets} 内容资产${businessGate.pass ? "" : `（业务 Gate 拦截：${businessGate.reasons.length} 项）`}`,
     actor: `ai:${runId}`,
   });
   return result;

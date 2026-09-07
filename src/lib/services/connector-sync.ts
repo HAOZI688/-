@@ -260,8 +260,12 @@ export const connectorSyncService = {
             if (accRow[0]) {
               // 日期列校验：有值但解析失败 → 行级错误（不静默用当前时间）
               const capturedAt = capturedCol ? parseDateLocal(row[capturedCol]) : null;
-              if (capturedCol && row[capturedCol] && !capturedAt) {
+              if (capturedCol && row[capturedCol ?? ""] && !capturedAt) {
                 throw new Error(`列[${capturedCol}] 值[${row[capturedCol]}] 无法解析为日期`);
+              }
+              // B-4 §24：未来时间指标 → 隔离（不进生产评分）
+              if (capturedAt && capturedAt.getTime() > Date.now() + 5 * 60 * 1000) {
+                throw new Error(`列[${capturedCol}] 值[${row[capturedCol ?? ""]}] 为未来时间（INVALID_FUTURE_TIMESTAMP），已拒绝`);
               }
               const snap = await metricsRepository.upsertAccountSnapshot({
                 socialAccountId: accRow[0].id,

@@ -140,9 +140,9 @@ export default async function XiaodouyaPage() {
         <CardContent className="space-y-2">
           <div className="flex flex-wrap items-center gap-2">
             {isApiMode ? (
-              <Badge variant="red">API 模式未配置</Badge>
+              <Badge variant="red">API 直连：未配置</Badge>
             ) : (
-              <Badge variant="green">文件导入模式</Badge>
+              <Badge variant="blue">CSV Import Available（文件导入就绪）</Badge>
             )}
             <span className="text-xs text-zinc-500">
               上次同步：{xiaodouya?.lastSyncAt ? fmtDate(xiaodouya.lastSyncAt) : "从未"}

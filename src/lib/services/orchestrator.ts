@@ -397,8 +397,10 @@ export const orchestratorService = {
     if (!plan) return null;
 
     const run = await workflowRepository.getRun(runId);
-    const finalStatus = run?.status === "completed" ? "completed" : "failed";
-    await orchestratorRepository.updatePlanItem(item.id, { status: finalStatus });
+    // B-4 §6：run 状态语义保留（needs_review 不再被折叠成 failed）
+    const finalStatus =
+      run?.status === "completed" ? "completed" : run?.status === "needs_review" ? "needs_review" : "failed";
+    await orchestratorRepository.updatePlanItem(item.id, { status: finalStatus as never });
 
     // 下游推进
     const children = await orchestratorRepository.getChildren(item.workflowType as string);
@@ -420,10 +422,22 @@ export const orchestratorService = {
       }
     }
 
-    // 计划完成检查（V3：paused 为终态）
+    // B-4 §6：计划业务状态判定（区分执行结束 / 业务完成 / 业务阻塞）
     const all = await orchestratorRepository.getPlanItems(plan.id);
-    if (all.length && all.every((i) => i.status === "completed" || i.status === "failed" || i.status === "skipped" || i.status === "rejected" || i.status === "paused")) {
-      await orchestratorRepository.updatePlan(plan.id, { status: "completed", completedAt: new Date() });
+    const finished = (i: { status: string }) =>
+      ["completed", "failed", "skipped", "rejected", "paused", "needs_review"].includes(i.status);
+    if (all.length && all.every(finished)) {
+      const failedCount = all.filter((i) => i.status === "failed").length;
+      const needsReviewCount = all.filter((i) => i.status === "needs_review").length;
+      const completedCount = all.filter((i) => i.status === "completed").length;
+      if (failedCount > 0) {
+        // 有 failed 的 required workflow → 业务阻塞（不是完成）
+        await orchestratorRepository.updatePlan(plan.id, { status: "production_blocked", completedAt: new Date() });
+      } else if (needsReviewCount > 0) {
+        await orchestratorRepository.updatePlan(plan.id, { status: "needs_review", completedAt: new Date() });
+      } else {
+        await orchestratorRepository.updatePlan(plan.id, { status: "completed", completedAt: new Date() });
+      }
     }
     return { plan, item };
   },

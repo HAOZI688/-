@@ -16,7 +16,7 @@ export default async function PublicationsPage() {
   return (
     <div className="space-y-4 p-4">
       <div>
-        <h1 className="text-lg font-semibold">发布中心</h1>
+        <h1 className="text-lg font-semibold">发布交接（Publish Handoff）</h1>
         <p className="text-xs text-zinc-500">
           V1 不自动发布：本页做发布计划与登记，人工确认后标记「已发布」并回填 URL。
         </p>

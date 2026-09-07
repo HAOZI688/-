@@ -161,9 +161,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4">
-          <div className="leading-tight">
-            <div className="text-sm font-medium text-zinc-700">图文工厂</div>
-            <div className="text-[10px] text-zinc-400">AI 内容生产与运营中台</div>
+          <div className="text-sm font-medium text-zinc-700">
+            {NAV_GROUPS.find((g) => g.items.some((i) => pathname.startsWith(i.href)))?.label ?? "图文工厂"}
           </div>
           <div className="flex items-center gap-2 text-xs text-zinc-400">
             <span className="inline-flex items-center gap-1.5">

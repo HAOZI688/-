@@ -135,46 +135,32 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-4 p-4">
-      {/* ===== 产品品牌与定位（图文工厂 ≠ 小豆芽 App） ===== */}
-      <div className="flex flex-wrap items-end justify-between gap-2">
-        <div>
-          <h1 className="text-xl font-semibold">图文工厂</h1>
-          <p className="text-xs text-zinc-500">AI 内容生产与运营中台</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-1 text-[10px] text-zinc-400">
-          {["趋势与数据", "Topic", "内容计划", "AI 生产", "人工审核", "发布包"].map((s) => (
-            <span key={s} className="rounded bg-zinc-100 px-1.5 py-0.5">{s}</span>
-          ))}
-          <span className="rounded bg-blue-600 px-1.5 py-0.5 font-medium text-white">小豆芽 App</span>
-          <span className="rounded bg-zinc-100 px-1.5 py-0.5">内容平台</span>
-          <span className="text-zinc-300">→</span>
-          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700">表现数据回流</span>
-        </div>
-      </div>
+      {/* 生产闭环一行注（图文工厂 → 小豆芽 App → 回流）；品牌只出现在 sidebar */}
+      <p className="text-[11px] text-zinc-400">
+        生产闭环：趋势与数据 → Topic → 内容计划 → AI 生产 → 人工审核 → 发布包 →
+        <span className="font-medium text-blue-600"> 小豆芽 App</span> → 内容平台 → 表现数据回流图文工厂
+      </p>
 
       {/* ===== 今天需要处理什么（V4 Action Center 首屏） ===== */}
-      <Card className="border-orange-100 bg-orange-50/40">
+      <Card className="border-t-2 border-t-orange-400">
         <CardContent className="p-0">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-orange-100/60 px-3 py-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 px-3 py-2">
             <div className="flex items-center gap-2 text-xs font-semibold">
               今天需要处理什么
-              <span className="rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-normal text-orange-700">{actions.length} 项待办</span>
-              <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-normal text-zinc-500">
-                {live ? "LIVE 模式（已排除演示数据）" : "开发模式（含演示数据）"}
-              </span>
+              <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[10px] font-normal text-zinc-500">{actions.length} 项待办</span>
             </div>
-            <span className="text-[10px] text-zinc-400">来源：周计划 / 工作流 / 审核 / 发布 / 连接器 / 数据质量（完成动作后自动消除）</span>
+            <span className="text-[10px] text-zinc-400">{live ? "LIVE 模式（已排除演示数据）" : "开发模式（含演示数据）"} · 完成动作后自动消除</span>
           </div>
           {actions.length === 0 ? (
             <p className="px-3 py-4 text-center text-xs text-zinc-400">今天没有待处理项 —— 系统状态干净。</p>
           ) : (
-            <ul className="divide-y divide-orange-100/50">
+            <ul className="divide-y divide-zinc-100">
               {actions.map((a) => (
-                <li key={a.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                <li key={a.id} className={`flex items-center justify-between gap-3 px-3 py-1.5 ${a.priority === "P0" ? "border-l-2 border-l-red-400" : a.priority === "P1" ? "border-l-2 border-l-orange-300" : "border-l-2 border-l-zinc-200"}`}>
                   <div className="flex min-w-0 items-center gap-2">
-                    <PriorityBadge priority={a.priority as never} />
+                    <span className="w-5 shrink-0 text-center text-[10px] font-semibold text-zinc-400">{a.priority}</span>
                     <div className="min-w-0">
-                      <Link href={a.targetUrl ?? "#"} className="block truncate text-xs font-medium hover:text-blue-600">
+                      <Link href={a.targetUrl ?? "#"} className="block truncate text-xs font-medium text-zinc-700 hover:text-blue-600">
                         {a.title}
                       </Link>
                       <div className="truncate text-[10px] text-zinc-400">{a.description}</div>

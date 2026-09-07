@@ -54,6 +54,7 @@ export const verificationStatus = pgEnum("verification_status", [
   "verified",
   "conflict",
   "needs_update",
+  "failed",
 ]);
 
 /** Source_Packet 整体一致性 */
@@ -306,7 +307,9 @@ export const weeklyPlanStatus = pgEnum("weekly_plan_status", [
   "production",
   "completed",
   "cancelled",
-]);
+  "production_blocked",
+  "needs_review",
+  ]);
 
 /** 周计划项状态：pending（待用户确认选题）→ approved → running → completed/failed；paused=暂缓（不生产） */
 export const weeklyPlanItemStatus = pgEnum("weekly_plan_item_status", [
@@ -318,4 +321,5 @@ export const weeklyPlanItemStatus = pgEnum("weekly_plan_item_status", [
   "completed",
   "failed",
   "skipped",
+  "needs_review",
 ]);

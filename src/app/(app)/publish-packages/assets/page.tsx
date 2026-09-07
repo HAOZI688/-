@@ -83,7 +83,15 @@ export default async function BrandAssetsPage() {
             <div key={a.id} className="space-y-1.5 rounded-lg border border-zinc-200 bg-white p-2">
               <div className="relative">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={a.fileUrl ?? ""} alt={a.name} className={`aspect-square w-full rounded object-contain ${a.active ? "" : "opacity-40 grayscale"}`} />
+                <div className="relative aspect-square w-full overflow-hidden rounded bg-zinc-100">
+                  {a.fileUrl ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img src={a.fileUrl} alt={a.name} className={`h-full w-full object-contain ${a.active ? "" : "opacity-40 grayscale"}`} onError={(e) => { const el = e.currentTarget; el.style.display = "none"; el.parentElement?.querySelector("[data-missing]")?.classList.remove("hidden"); }} />
+                  ) : null}
+                  <div data-missing className="absolute inset-0 hidden flex-col items-center justify-center text-[10px] text-zinc-400">
+                    <span>Missing Asset</span><span>Needs Upload</span>
+                  </div>
+                </div>
                 {a.locked && <span className="absolute left-1 top-1 rounded bg-amber-500 px-1 text-[9px] text-white">已锁定</span>}
                 {!a.active && <span className="absolute right-1 top-1 rounded bg-zinc-600 px-1 text-[9px] text-white">已停用</span>}
               </div>

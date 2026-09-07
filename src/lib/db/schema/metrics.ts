@@ -1,4 +1,4 @@
-import { index, jsonb, numeric, pgTable, text, timestamp, uuid, varchar, integer } from "drizzle-orm/pg-core";
+import { boolean, index, jsonb, numeric, pgTable, text, timestamp, uuid, varchar, integer } from "drizzle-orm/pg-core";
 import { externalPosts } from "./connectors";
 import { publications } from "./publishing";
 import { socialAccounts } from "./social";
@@ -60,6 +60,8 @@ export const postMetricSnapshots = pgTable(
     fiveSecondRetention: numeric("five_second_retention"),
     profileVisits: integer("profile_visits").notNull().default(0),
     dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
+    /** B-4：异常数据（未来时间/负值/重复）隔离标记，不删除 */
+    excludedFromProduction: boolean("excluded_from_production").notNull().default(false),
     rawMetrics: jsonb("raw_metrics").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -90,7 +92,9 @@ export const accountMetricSnapshots = pgTable(
     impressions: integer("impressions").notNull().default(0),
     views: integer("views").notNull().default(0),
     engagements: integer("engagements").notNull().default(0),
-    dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
+    /** B-4：异常数据隔离标记 */
+    excludedFromProduction: boolean("excluded_from_production").notNull().default(false),
+        dataSource: varchar("data_source", { length: 30 }).notNull().default("xiaodouya_import"),
     rawMetrics: jsonb("raw_metrics").default({}),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
