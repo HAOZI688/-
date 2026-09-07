@@ -117,7 +117,7 @@ export default async function MappingTemplatesPage() {
           </p>
         </div>
         <Link href="/connectors/xiaodouya">
-          <Button variant="outline">← 返回小豆芽工作台</Button>
+          <Button variant="outline">← 返回小豆芽连接</Button>
         </Link>
       </div>
 

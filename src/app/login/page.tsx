@@ -12,8 +12,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
     <div className="flex min-h-screen items-center justify-center bg-zinc-50 p-4">
       <div className="w-full max-w-sm space-y-4 rounded-xl border border-zinc-200 bg-white p-6 shadow-sm">
         <div>
-          <h1 className="text-lg font-semibold">Content OS 登录</h1>
-          <p className="mt-1 text-xs text-zinc-500">单用户工作区 · 会话 7 天有效</p>
+          <h1 className="text-lg font-semibold">图文工厂｜登录</h1>
+          <p className="mt-1 text-xs text-zinc-500">图文工厂｜AI 内容生产与运营中台 · 会话 7 天有效</p>
         </div>
 
         {!enabled ? (

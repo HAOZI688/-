@@ -108,7 +108,7 @@ export default async function WeeklyPlanPage() {
               <Button variant="outline">生产监控（进行中）</Button>
             </Link>
           )}
-          <Link href="/dashboard"><Button variant="ghost">← 返回工作台</Button></Link>
+          <Link href="/dashboard"><Button variant="ghost">← 返回总览</Button></Link>
         </div>
       </div>
 

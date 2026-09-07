@@ -135,6 +135,23 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-4 p-4">
+      {/* ===== 产品品牌与定位（图文工厂 ≠ 小豆芽 App） ===== */}
+      <div className="flex flex-wrap items-end justify-between gap-2">
+        <div>
+          <h1 className="text-xl font-semibold">图文工厂</h1>
+          <p className="text-xs text-zinc-500">AI 内容生产与运营中台</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1 text-[10px] text-zinc-400">
+          {["趋势与数据", "Topic", "内容计划", "AI 生产", "人工审核", "发布包"].map((s) => (
+            <span key={s} className="rounded bg-zinc-100 px-1.5 py-0.5">{s}</span>
+          ))}
+          <span className="rounded bg-blue-600 px-1.5 py-0.5 font-medium text-white">小豆芽 App</span>
+          <span className="rounded bg-zinc-100 px-1.5 py-0.5">内容平台</span>
+          <span className="text-zinc-300">→</span>
+          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700">表现数据回流</span>
+        </div>
+      </div>
+
       {/* ===== 今天需要处理什么（V4 Action Center 首屏） ===== */}
       <Card className="border-orange-100 bg-orange-50/40">
         <CardContent className="p-0">

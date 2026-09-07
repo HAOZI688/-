@@ -4,7 +4,7 @@ import { ReviewTabs } from "./review-tabs";
 export const dynamic = "force-dynamic";
 
 /**
- * Human Gate 工作台（V3）：Tabs 三栏（Topics / Content / Publishing）。
+ * Human Gate 审核页（V3）：Tabs 三栏（Topics / Content / Publishing）。
  * 数据全部在 server 层一次性拉取，客户端只做 Tab 切换（无重复查询、无 N+1）。
  */
 export default async function ReviewPage() {

@@ -1,6 +1,6 @@
-# 图文工厂 Content OS（内容操作系统）
+# 图文工厂｜AI 内容生产与运营中台
 
-面向 B2B AI Agent 内容团队的内容运营系统：**Topic 选题 → 内容生产（AI 工作流 + 人工门禁）→ 发布包 → 发布管理 → 数据回流 → 表现反馈 → 涨粉归因 → 趋势雷达** 的每周持续运营闭环。
+图文工厂（AI 内容生产与运营中台）面向 B2B AI Agent 内容团队：**Topic 选题 → 内容生产（AI 工作流 + 人工门禁）→ 发布包 → 发布管理 → 数据回流 → 表现反馈 → 涨粉归因 → 趋势雷达** 的每周持续运营闭环。
 
 - **V1**（tag `v1.0.0`，43 表冻结）：Topic 系统、来源核验、AI 工作流引擎、内容资产、发布管理、数据回流（CSV 导入）、表现闭环
 - **V2**（47 表）：Content Orchestrator 自动规划 + 4 个真实 AI Workflow + DAG 依赖 + 三道人工门禁 + 周一 Scheduler + Topic 反馈
@@ -89,12 +89,12 @@ scripts/restore-db.sh           # 恢复（验证库模式，已实测）
 
 ## 使用 /screen 获取小豆芽数据
 
-日常真实数据回流的两层架构：**/screen Skill = 数据采集层，Content OS Import Pipeline = 数据处理层**。
+日常真实数据回流的两层架构：**/screen Skill = 数据采集层，图文工厂导入管道 = 数据处理层**。
 
 ```
 小豆芽数据页 → /screen 抄数（截屏→读图→结构化）
     → data/metrics-import.csv
-    → Content OS 导入（/data-import 按钮 或 pnpm data:import-screen）
+    → 图文工厂导入（/data-import 按钮 或 pnpm data:import-screen）
     → 账号/作品匹配 → 幂等快照（snapshot_date → captured_at）→ 基线/表现重算 → 下轮选题反馈
 ```
 
@@ -109,5 +109,6 @@ scripts/restore-db.sh           # 恢复（验证库模式，已实测）
 - 开发：`pnpm dev`（:3000，用户使用）；生产：`env PORT=3210 pnpm start`（日志 /tmp/contentos-server.log）
 - DB 查询：`node --import tsx -e "import postgres from 'postgres'; ..."`
 - Browser E2E：`node scripts/v4-e2e-cdp.mjs --base=http://localhost:3210`（前置：生产构建 + seed + Chrome CDP 9223）
+- 外部渠道：发布与数据采集由**小豆芽 App** 承接（数据连接 → 小豆芽 App），图文工厂只做生产、审核、归因与下一周期决策
 - 周一 Scheduler：`POST /api/cron/scheduler`（外部 cron 触发；配置 CRON_SECRET 后强制校验；UI 诚实显示 Not Configured）
 - 备份：`bash scripts/backup-db.sh`（每周至少一次；恢复验证 `bash scripts/restore-db.sh <file>`）

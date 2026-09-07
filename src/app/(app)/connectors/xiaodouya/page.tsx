@@ -117,16 +117,18 @@ export default async function XiaodouyaPage() {
 
   return (
     <div className="space-y-4 p-4">
-      {/* 顶部：标题 + 映射模板管理 */}
+      {/* 顶部：标题 + 定位说明 + 映射模板管理 */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="text-lg font-semibold">小豆芽数据集成</h1>
-          <p className="text-xs text-zinc-500">
-            Adapter 原则：不假设公开 API 存在。当前 File Import 模式（规格 §34）：CSV 上传 → 检测 → 映射 → 匹配 → 快照。
+          <h1 className="text-lg font-semibold">小豆芽 App 连接</h1>
+          <p className="mt-0.5 max-w-3xl text-xs text-zinc-500">
+            小豆芽 App 是图文工厂外部的<b>账号运营、发布与数据采集渠道</b>：承接内容发布、账号管理与作品数据采集；
+            相关数据同步回<b>图文工厂</b>后，参与内容表现分析、涨粉归因和下一周期 Topic Scoring。
+            当前 File Import 模式：CSV 上传 → 检测 → 映射 → 匹配 → 快照。
           </p>
         </div>
         <Link href="/connectors/xiaodouya/mappings">
-          <Button variant="outline">映射模板管理</Button>
+          <Button variant="outline">小豆芽映射模板</Button>
         </Link>
       </div>
 

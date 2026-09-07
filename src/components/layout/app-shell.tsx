@@ -34,51 +34,61 @@ const NAV_GROUPS = [
   {
     label: "总览",
     items: [
-      { href: "/dashboard", label: "运营工作台", icon: LayoutDashboard },
-      { href: "/weekly-plan", label: "本周内容计划", icon: ClipboardList },
-      { href: "/review", label: "待审核", icon: FileText },
+      { href: "/dashboard", label: "总览", icon: LayoutDashboard },
       { href: "/notifications", label: "通知中心", icon: Bell },
-      { href: "/topics", label: "Topic 中心", icon: Lightbulb },
-      { href: "/topic-graph", label: "Topic 关系图谱", icon: Network },
     ],
   },
   {
-    label: "生产",
+    label: "内容规划",
+    items: [
+      { href: "/weekly-plan", label: "本周内容计划", icon: ClipboardList },
+      { href: "/topics", label: "Topic 中心", icon: Lightbulb },
+      { href: "/topic-graph", label: "Topic 关系图谱", icon: Network },
+      { href: "/trend-radar", label: "趋势雷达", icon: Radar },
+      { href: "/sources", label: "来源与核验", icon: FileText },
+    ],
+  },
+  {
+    label: "内容生产",
     items: [
       { href: "/production", label: "生产监控台", icon: Factory },
-      { href: "/trend-radar", label: "趋势雷达", icon: Radar },
       { href: "/workflows", label: "工作流", icon: Workflow },
       { href: "/workflows/runs", label: "执行记录", icon: Newspaper },
-      { href: "/sources", label: "来源与核验", icon: FileText },
+      { href: "/review", label: "待审核", icon: FileText },
       { href: "/content", label: "内容资产", icon: Sparkles },
       { href: "/knowledge", label: "常青知识库", icon: BookOpen },
       { href: "/github-weekly", label: "GitHub 周榜", icon: Github },
-      { href: "/publish-packages", label: "发布包", icon: Package },
-      { href: "/publish-packages/assets", label: "品牌资产", icon: Package },
     ],
   },
   {
-    label: "分发",
+    label: "发布管理",
     items: [
+      { href: "/publish-packages", label: "发布包", icon: Package },
+      { href: "/publish-packages/assets", label: "品牌资产", icon: Package },
       { href: "/publications", label: "发布中心", icon: Send },
       { href: "/calendar", label: "内容日历", icon: CalendarDays },
-      { href: "/accounts", label: "社交账号", icon: Users },
+    ],
+  },
+  {
+    label: "数据分析",
+    items: [
       { href: "/analytics", label: "数据分析", icon: BarChart3 },
       { href: "/analytics/attribution", label: "涨粉归因", icon: BarChart3 },
     ],
   },
   {
-    label: "数据集成",
+    label: "数据连接",
     items: [
-      { href: "/connectors/xiaodouya", label: "小豆芽", icon: Database },
-      { href: "/connectors/xiaodouya/mappings", label: "映射模板", icon: Database },
+      { href: "/connectors/xiaodouya", label: "小豆芽 App", icon: Database },
+      { href: "/connectors/xiaodouya/mappings", label: "小豆芽账号映射", icon: Database },
+      { href: "/accounts", label: "社交账号（小豆芽）", icon: Users },
       { href: "/data-import", label: "数据导入", icon: Upload },
     ],
   },
   {
     label: "系统",
     items: [
-      { href: "/settings", label: "设置", icon: Settings },
+      { href: "/settings", label: "设置（AI 配置）", icon: Settings },
       { href: "/system/readiness", label: "生产就绪检查", icon: Factory },
     ],
   },
@@ -93,11 +103,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <aside className="flex w-52 shrink-0 flex-col border-r border-zinc-200 bg-white">
         <div className="flex h-12 items-center gap-2 border-b border-zinc-100 px-4">
           <div className="flex h-6 w-6 items-center justify-center rounded-md bg-blue-600 text-[11px] font-bold text-white">
-            C
+            图
           </div>
           <div className="leading-tight">
-            <div className="text-[13px] font-semibold">Content OS</div>
-            <div className="text-[10px] text-zinc-400">AI CONTENT OPS</div>
+            <div className="text-[13px] font-semibold">图文工厂</div>
+            <div className="text-[10px] text-zinc-400">AI 内容生产与运营中台</div>
           </div>
         </div>
         <nav className="flex-1 space-y-4 overflow-y-auto px-2 py-3">
@@ -151,13 +161,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-zinc-200 bg-white px-4">
-          <div className="text-sm font-medium text-zinc-700">
-            AI 社交内容运营平台
+          <div className="leading-tight">
+            <div className="text-sm font-medium text-zinc-700">图文工厂</div>
+            <div className="text-[10px] text-zinc-400">AI 内容生产与运营中台</div>
           </div>
           <div className="flex items-center gap-2 text-xs text-zinc-400">
             <span className="inline-flex items-center gap-1.5">
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-              本地工作台
+              本地环境
             </span>
           </div>
         </header>

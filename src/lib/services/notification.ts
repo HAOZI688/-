@@ -57,7 +57,7 @@ export const notificationService = {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           msg_type: "text",
-          content: { text: `${severityEmoji} [Content OS] ${input.title}${linkSuffix}\n${input.message ?? ""}`.slice(0, 900) },
+          content: { text: `${severityEmoji} [图文工厂] ${input.title}${linkSuffix}\n${input.message ?? ""}`.slice(0, 900) },
         }),
         signal: controller.signal,
       });

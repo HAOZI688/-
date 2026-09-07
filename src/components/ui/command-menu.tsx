@@ -5,7 +5,7 @@ import { Search, FileText } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS: { label: string; href: string; hint: string }[] = [
-  { label: "运营工作台", href: "/dashboard", hint: "D" },
+  { label: "总览", href: "/dashboard", hint: "D" },
   { label: "本周内容计划", href: "/weekly-plan", hint: "W" },
   { label: "生产监控台", href: "/production", hint: "P" },
   { label: "待审核", href: "/review", hint: "R" },
