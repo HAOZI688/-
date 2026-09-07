@@ -138,7 +138,10 @@ export async function writeBackRunOutputs(
       status: "ready_for_production",
       priority: "P3",
     });
-    await topicRepository.addRelation(runMeta.topicId!, topic.id, "derived");
+    // B-3：无 parent topic（如 ai_weekly 全局 run）时不建 relation（topics 表关系可后补），Topic 本身保留
+    if (runMeta.topicId) {
+      await topicRepository.addRelation(runMeta.topicId, topic.id, "derived");
+    }
     await auditRepository.log({
       action: "topic_create",
       entityType: "topic",
@@ -152,11 +155,18 @@ export async function writeBackRunOutputs(
   }
 
   // 3) Content Assets（status=in_review → Human Gate 待审核）
+  const DEFAULT_ASSET_TYPE: Record<string, string> = {
+    ai_weekly: "ai_weekly_script",
+    github_weekly: "github_card",
+    evergreen: "wechat_article",
+    wechat_deep_dive: "wechat_article",
+  };
   for (const ca of parsed.contentAssets ?? []) {
     if (!ca?.title || !runMeta.topicId) continue;
     await contentRepository.createAsset({
       topicId: runMeta.topicId,
-      assetType: ca.assetType as never,
+      // 模可能不输出 assetType（或输出自己的 topicId 字段）——按 workflowType 推断，忽略模型自带的 topicId
+      assetType: (ca.assetType ?? DEFAULT_ASSET_TYPE[runMeta.workflowType] ?? "wechat_article") as never,
       platform: ca.platform as never,
       title: ca.title.slice(0, 300),
       content: ca.content ?? null,

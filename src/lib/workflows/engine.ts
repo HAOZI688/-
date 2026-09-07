@@ -19,7 +19,7 @@ import { AI_PROMPTS_DIR } from "@/lib/ai/prompt-registry";
 import { chatResilient, isAiConfigured, AiResilienceError, estimateCost } from "@/lib/ai/providers";
 import { isLiveMode } from "@/lib/services/live-mode";
 import { promptTemplates } from "@/lib/db/schema";
-import { workflowRepository, orchestratorRepository } from "@/lib/repositories";
+import { workflowRepository, orchestratorRepository, topicRepository, githubRepository } from "@/lib/repositories";
 import { writeBackRunOutputs } from "@/lib/workflows/writeback";
 import { runQualityGate } from "@/lib/workflows/quality-gate";
 import type { WorkflowRun } from "@/lib/db/schema";
@@ -140,6 +140,43 @@ async function resolvePromptVersion(workflowType: string): Promise<string> {
   }
 }
 
+/** B-3：把真实数据装配进 run 输入（模型不能无米下锅）。
+ * - 有 topicId：注入 Topic 标题/描述/类型/来源
+ * - github_weekly：注入本周 GitHub 快照 items（真实仓库数据）
+ * - ai_weekly：注入 Trend Radar 顶部候选（真实趋势信号）
+ * 禁止编造：只注入数据库里真实存在的数据。 */
+async function buildRunInput(opts: RunWorkflowOptions): Promise<Record<string, unknown>> {
+  const input: Record<string, unknown> = { ...(opts.inputPayload ?? {}) };
+  try {
+    if (opts.topicId) {
+      const topic = await topicRepository.getById(opts.topicId);
+      if (topic) {
+        input.topic = { topicId: topic.topicId, title: topic.title, description: topic.description ?? "", type: topic.topicType, status: topic.status };
+        // evergreen/wechat：明确要求产出完整内容（知识类内容允许领域知识，事实数字需谨慎——gate 会拦编造）
+        if (opts.workflowType === "evergreen" || opts.workflowType === "wechat_deep_dive") {
+          input.instruction = `围绕 Topic「${topic.title}」完成本步骤：${opts.workflowType === "evergreen" ? "概念拆解（定义/原理/误区/实战步骤）" : "深度成稿（正文完整可发布，全文只保留一个主要 CTA）"}。把成稿内容写入 contentAssets[0].content（完整正文，不是摘要），title 写入 contentAssets[0].title。知识解释可用你的领域知识；具体数字/日期不确定时用定性描述，禁止编造。`;
+        }
+      }
+    }
+    if (opts.workflowType === "github_weekly") {
+      const snapshots = await githubRepository.listSnapshots();
+      const latest = snapshots[0];
+      if (latest) {
+        const items = (await githubRepository.getItems(latest.id)).slice(0, 12);
+        input.githubSnapshot = { snapshotId: latest.snapshotId, week: latest.week, basis: latest.selectionBasis, items: items.map((i) => ({ rank: i.rank, repository: i.repository, weeklyGrowth: i.weeklyGrowth, totalStars: i.totalStars, url: i.repoUrl, verified: i.verificationStatus, selected: i.selected })) };
+      }
+    }
+    if (opts.workflowType === "ai_weekly") {
+      const { trendRepository } = await import("@/lib/repositories");
+      const trends = await trendRepository.listTrends({ limit: 5 });
+      input.trendCandidates = trends.map((t: { trendKey: string; title: string; currentScore?: string | null; baseScore?: string | null; status?: string | null }) => ({ trendKey: t.trendKey, title: t.title, score: t.currentScore ?? t.baseScore, status: t.status }));
+    }
+  } catch (e) {
+    console.error("buildRunInput failed:", e instanceof Error ? e.message : e);
+  }
+  return input;
+}
+
 async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteback?: boolean }) {
   const steps = WORKFLOW_STEPS[opts.workflowType];
   const live = isLiveMode();
@@ -210,10 +247,10 @@ async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteb
         } else {
           const res = await chatResilient(
             [
-              { role: "system", content: `你是内容运营平台的工作流执行器。请严格遵循以下工作流提示词执行步骤「${step.label}」，并输出 JSON。\n\n${prompt}` },
-              { role: "user", content: `步骤：${step.key}\n输入：${JSON.stringify(opts.inputPayload ?? {})}` },
+              { role: "system", content: `你是内容运营平台的工作流执行器。严格遵循以下工作流提示词执行步骤「${step.label}」。\n\n硬性输出契约：\n1. 最终输出必须是提示词「输出格式」中定义的 JSON，字段名严格为 derivedTopics / contentAssets / outputs（缺失的字段用空数组 []），不得发明其他字段结构。\n2. 禁止编造任何数据：planId/topicId/UUID/时间戳/星数/增长数等只能来自输入，没有就留空。\n3. 禁止输出示例值、占位文本或模拟执行说明。\n4. 只输出 JSON 本身（可包裹在 markdown 代码块中），不要附加解释。\n\n${prompt}` },
+              { role: "user", content: `步骤：${step.key}\n真实输入数据（只允许使用以下数据，缺失就用空数组，禁止编造）：${JSON.stringify(await buildRunInput(opts))}` },
             ],
-            { maxTokens: 4000 },
+            { maxTokens: Number(process.env.AI_MAX_TOKENS ?? 8000) },
           );
           output = { provider: res.provider, model: res.model, providerStatus: res.providerStatus, retryCount: res.retryCount, text: res.text.slice(0, 8000) };
           const inputTokens = res.usage?.inputTokens ?? 0;
@@ -241,8 +278,9 @@ async function executeRun(runId: string, opts: RunWorkflowOptions & { skipWriteb
         results[step.key] = output;
         await db.update(workflowTasks).set({ status: "completed", output, completedAt: new Date() }).where(eq(workflowTasks.id, task.id));
 
-        // V4：质量 Gate——内容生产步骤（produce/draft）检查产出
-        if (!demo && (step.key === "produce" || step.key === "draft")) {
+        // V4：质量 Gate——内容生产步骤（produce/draft）+ 每个工作流的最后一步（拦截编造结构）
+        const isLastStep = step === steps[steps.length - 1];
+        if (!demo && (step.key === "produce" || step.key === "draft" || isLastStep)) {
           quality = await runQualityGate({
             workflowType: opts.workflowType,
             text: output.text as string,

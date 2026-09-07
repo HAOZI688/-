@@ -19,7 +19,9 @@ export async function loginAction(formData: FormData) {
   store.set(SESSION_COOKIE, createSessionToken(), {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    // http 本地部署（http://localhost:3210）下部分浏览器/无头实例会丢弃 Secure cookie；
+    // https 部署时设置 AUTH_COOKIE_SECURE=1
+    secure: process.env.AUTH_COOKIE_SECURE === "1",
     path: "/",
     maxAge: SESSION_MAX_AGE_S,
   });

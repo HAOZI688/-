@@ -91,7 +91,8 @@ export function configuredProviders(): ProviderName[] {
   const fallback = (process.env.AI_FALLBACK_PROVIDER ?? "").trim() as ProviderName;
   const chain: ProviderName[] = [];
   if (primary && available.includes(primary)) chain.push(primary);
-  if (fallback && available.includes(fallback) && !chain.includes(fallback)) chain.push(fallback);
+  // fallback 允许与 primary 同 provider（同中转不同模型：AI_FALLBACK_MODEL 区分层级）
+  if (fallback && available.includes(fallback)) chain.push(fallback);
   for (const p of available) {
     if (!chain.includes(p)) chain.push(p);
   }
@@ -101,7 +102,8 @@ export function configuredProviders(): ProviderName[] {
 function providerConfigured(p: ProviderName): boolean {
   switch (p) {
     case "anthropic":
-      return Boolean(process.env.ANTHROPIC_API_KEY);
+      // B-3：支持两种形态——官方 API（ANTHROPIC_API_KEY）或 Anthropic 兼容中转（ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN）
+      return Boolean(process.env.ANTHROPIC_API_KEY) || Boolean(process.env.ANTHROPIC_BASE_URL && process.env.ANTHROPIC_AUTH_TOKEN);
     case "content_api":
       return Boolean(process.env.CONTENT_API_BASE_URL && process.env.CONTENT_API_KEY);
     case "openai":
@@ -163,7 +165,8 @@ export async function checkProviderHealth(provider: ProviderName, force = false)
   }
   const started = Date.now();
   try {
-    const res = await chatOnce(provider, [{ role: "user", content: "ping，请回复 ok" }], { maxTokens: 8, temperature: 0, model: modelFor(provider, false) }, 15_000);
+    // reasoning 模型（如 glm-5.3）会把小 max_tokens 全花在思考上导致 content 为空——预算给足
+    const res = await chatOnce(provider, [{ role: "user", content: "ping，请回复 ok" }], { maxTokens: 256, temperature: 0, model: modelFor(provider, false) }, 15_000);
     base.reachable = res.text.trim().length > 0;
     base.latencyMs = Date.now() - started;
     base.model = res.model;
@@ -185,11 +188,18 @@ async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     if (provider === "anthropic") {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      // B-3：官方 API（x-api-key + ANTHROPIC_API_KEY）或兼容中转（Bearer + ANTHROPIC_BASE_URL/ANTHROPIC_AUTH_TOKEN）
+      const baseUrl = (process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com").replace(/\/$/, "");
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      const authToken = process.env.ANTHROPIC_AUTH_TOKEN;
+      const authHeaders: Record<string, string> = {};
+      if (apiKey) authHeaders["x-api-key"] = apiKey;
+      else if (authToken) authHeaders["authorization"] = `Bearer ${authToken}`;
+      const res = await fetch(`${baseUrl}/v1/messages`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          "x-api-key": process.env.ANTHROPIC_API_KEY!,
+          ...authHeaders,
           "anthropic-version": "2023-06-01",
         },
         body: JSON.stringify({
@@ -218,7 +228,8 @@ async function chatOnce(provider: ProviderName, messages: ChatMessage[], opts: {
     const model = opts.model ?? modelFor(provider, false);
     const url =
       provider === "content_api"
-        ? `${(process.env.CONTENT_API_BASE_URL ?? "").replace(/\/$/, "")}/chat/completions`
+        ? // 中转 base 可能带或不带 /v1——智能拼接（token.wy.cn 不带）
+          `${(process.env.CONTENT_API_BASE_URL ?? "").replace(/\/$/, "")}${(process.env.CONTENT_API_BASE_URL ?? "").includes("/v1") ? "" : "/v1"}/chat/completions`
         : provider === "deepseek"
           ? "https://api.deepseek.com/chat/completions"
           : "https://api.openai.com/v1/chat/completions";

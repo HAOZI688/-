@@ -5,15 +5,16 @@
  * - 页面未登录 → 302 /login；API 未登录 → 401 JSON
  * - 会话校验：HMAC-SHA256 签名 + 过期（与 lib/auth.ts 同构，独立实现避免引入 next/headers）
  */
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 
 const SESSION_COOKIE = "contentos_session";
 
+/** 与 lib/auth.ts 的 credentialHash 完全一致（必须同构，否则签名校验失败） */
 function credentialHash(): string {
   if (process.env.AUTH_PASSWORD_HASH) return process.env.AUTH_PASSWORD_HASH;
-  return createHmac("sha256", "contentos").update(process.env.AUTH_PASSWORD ?? "").digest("hex");
+  return createHash("sha256").update(process.env.AUTH_PASSWORD ?? "").digest("hex");
 }
 
 function sessionSecret(): string {
